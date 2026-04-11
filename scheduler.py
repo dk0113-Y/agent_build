@@ -90,6 +90,7 @@ def sync_round_state(
         decision_file=context.round_dir / "gpt_decision.json",
         codex_request_path=context.round_dir / "codex_request.md",
         codex_report_path=context.round_dir / "codex_report.md",
+        gpt_input_path=context.round_dir / "gpt_input.md",
     )
     update_kwargs: dict[str, object] = {
         "status": status,

@@ -7,7 +7,7 @@
 2. `fake_train.py + scheduler.py`
    假训练 + 完成检测 demo。通过假训练脚本逐步生成训练样式产物，再由最小调度器判断“训练是否完成”。
 3. 协议层 / round 层
-   通过 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`tuning_policy.md`、`prepare_round.py` 把控制平面协议和文件握手层搭起来。
+   通过 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`gpt_input.md`、`tuning_policy.md`、`prepare_round.py`、`prepare_gpt_input.py` 把控制平面协议和文件握手层搭起来。
 
 当前仓库仍然不是成熟闭环系统。它没有接入 OpenAI API，没有依赖网页接口，也没有把“训练完成 -> 自动唤醒 Codex -> 自动改代码”串起来。
 
@@ -40,7 +40,9 @@ pip install -r requirements.txt
 - `automation_protocol.py`
   协议层 helper。定义 decision schema、round 编号、模板读取、decision 校验、`codex_request.md` 渲染等辅助函数。
 - `prepare_round.py`
-  round 初始化工具。创建 `automation_rounds/round_0001/` 这种目录，并放入 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`round_state.json`。
+  round 初始化工具。创建 `automation_rounds/round_0001/` 这种目录，并放入 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`gpt_input.md`、`round_state.json`。
+- `prepare_gpt_input.py`
+  GPT 输入包生成工具。读取 round 下的 decision / state / request / report，并生成给 GPT 消费的 `gpt_input.md`。
 - `templates/gpt_decision.template.json`
   `gpt_decision.json` 模板。
 - `templates/codex_report.template.md`
@@ -193,6 +195,7 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 - `previous_round_run` 会自动解析为上一轮成功 run 的真实路径
 - `best_known_reference` 可由 `gpt_decision.json.reference_targets.best_known_reference` 显式提供
 - round 目录中预置 `codex_report.md` 模板
+- `prepare_gpt_input.py` 可在 `codex_report.md` 有真实内容后生成 `gpt_input.md`
 - 可选地由 scheduler 自动调用 bridge，把 request 单向发送到本地 Codex
 
 当前还没有：
@@ -200,6 +203,7 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 - 网页端 GPT bridge
 - OpenAI API
 - Codex 自动写回 `codex_report.md`
+- GPT 输出自动回写为下一轮 `gpt_decision.json`
 - GPT 决策自动回流
 
 ### round 目录结构
@@ -211,6 +215,7 @@ automation_rounds/round_0001/
   gpt_decision.json
   codex_request.md
   codex_report.md
+  gpt_input.md
   round_state.json
 ```
 
@@ -246,6 +251,12 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json --invoke-codex-bridge --bridge-manual-confirm-send
 ```
 
+当 `codex_report.md` 已经有真实内容后，生成给 GPT 使用的输入包：
+
+```bash
+python prepare_gpt_input.py --round-id round_0001
+```
+
 ### `gpt_decision.json` 的最小 schema
 
 当前协议层至少包含这些字段：
@@ -277,6 +288,7 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 - 对应的真实 `run_dir`
 - 训练返回码
 - bridge 是否被调用以及调用结果
+- 对应的 `gpt_input.md` 路径
 
 系统会通过这些 state 文件建立最小 lineage：
 
@@ -300,6 +312,19 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 ### `codex_report.md` 的作用
 
 `codex_report.md` 当前只是模板 / stub，供后续 Codex 填写。当前仓库还没有自动生成该报告。
+
+### `gpt_input.md` 的作用
+
+`gpt_input.md` 是给后续 GPT 消费的标准输入包。它会把同一 round 中的：
+
+- `gpt_decision.json`
+- `round_state.json`
+- `codex_request.md`
+- `codex_report.md`
+
+整理成一份稳定 Markdown 文件，便于后续人工或自动发送给 GPT。
+
+`prepare_gpt_input.py` 会拒绝使用空模板状态的 `codex_report.md` 来生成 `gpt_input.md`。当前仓库仍然没有实现网页端 GPT 自动发送，也没有实现 GPT 输出自动回写为下一轮 decision。
 
 ### `tuning_policy.md` 的作用
 

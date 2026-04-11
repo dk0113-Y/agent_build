@@ -8,12 +8,14 @@ import sys
 from pathlib import Path
 
 from automation_protocol import (
+    GPT_INPUT_FILENAME,
     ProtocolError,
     build_decision_template,
     ensure_round_state_file,
     next_round_id,
     normalize_round_id,
     render_codex_report_stub,
+    render_gpt_input_placeholder,
     render_codex_request_placeholder,
     rounds_root,
     write_json_file,
@@ -40,17 +42,20 @@ def main() -> int:
         decision_file = round_dir / "gpt_decision.json"
         codex_request_path = round_dir / "codex_request.md"
         codex_report_path = round_dir / "codex_report.md"
+        gpt_input_path = round_dir / GPT_INPUT_FILENAME
         round_state_file = round_dir / "round_state.json"
 
         write_json_file(decision_file, build_decision_template(round_id))
         codex_request_path.write_text(render_codex_request_placeholder(round_id), encoding="utf-8")
         codex_report_path.write_text(render_codex_report_stub(round_id), encoding="utf-8")
+        gpt_input_path.write_text(render_gpt_input_placeholder(round_id), encoding="utf-8")
         ensure_round_state_file(
             round_dir=round_dir,
             round_id=round_id,
             decision_file=decision_file,
             codex_request_path=codex_request_path,
             codex_report_path=codex_report_path,
+            gpt_input_path=gpt_input_path,
         )
 
         print("status=prepared")
@@ -58,6 +63,7 @@ def main() -> int:
         print(f"decision_file={decision_file}")
         print(f"codex_request_path={codex_request_path}")
         print(f"codex_report_path={codex_report_path}")
+        print(f"gpt_input_path={gpt_input_path}")
         print(f"round_state_path={round_state_file}")
         return 0
     except ProtocolError as exc:

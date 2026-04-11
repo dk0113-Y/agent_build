@@ -21,6 +21,7 @@ SUPPORTED_TARGET_PROGRAM = "fake_train.py"
 ALLOWED_DECISION_STATUS = {"run_next_round", "hold", "stop"}
 ROUND_ID_PATTERN = re.compile(r"^round_(\d{4})$")
 ROUND_STATE_FILENAME = "round_state.json"
+GPT_INPUT_FILENAME = "gpt_input.md"
 SUCCESSFUL_ROUND_STATUSES = {"success"}
 
 
@@ -83,6 +84,7 @@ class RoundState:
     decision_file: str
     codex_request_path: str
     codex_report_path: str
+    gpt_input_path: str
     run_dir: str
     training_return_code: int | None
     bridge_invoked: bool
@@ -355,6 +357,17 @@ def render_codex_report_stub(round_id: str) -> str:
     return content.replace("{{ROUND_ID}}", normalize_round_id(round_id))
 
 
+def render_gpt_input_placeholder(round_id: str) -> str:
+    normalized_round_id = normalize_round_id(round_id)
+    return (
+        f"# GPT Input Package\n\n"
+        f"Round: `{normalized_round_id}`\n\n"
+        f"This file is a placeholder created by `prepare_round.py`.\n\n"
+        f"Run `python prepare_gpt_input.py --round-id {normalized_round_id}` after `codex_report.md` "
+        f"contains a real report to replace this file with the GPT input package.\n"
+    )
+
+
 def relative_repo_path(path: Path) -> str:
     try:
         return path.resolve().relative_to(repo_root()).as_posix()
@@ -368,6 +381,7 @@ def build_round_state(
     decision_file: Path,
     codex_request_path: Path,
     codex_report_path: Path,
+    gpt_input_path: Path,
 ) -> RoundState:
     timestamp = now_iso()
     return RoundState(
@@ -377,6 +391,7 @@ def build_round_state(
         decision_file=relative_repo_path(decision_file),
         codex_request_path=relative_repo_path(codex_request_path),
         codex_report_path=relative_repo_path(codex_report_path),
+        gpt_input_path=relative_repo_path(gpt_input_path),
         run_dir="",
         training_return_code=None,
         bridge_invoked=False,
@@ -394,6 +409,7 @@ def round_state_to_dict(state: RoundState) -> dict[str, Any]:
         "decision_file": state.decision_file,
         "codex_request_path": state.codex_request_path,
         "codex_report_path": state.codex_report_path,
+        "gpt_input_path": state.gpt_input_path,
         "run_dir": state.run_dir,
         "training_return_code": state.training_return_code,
         "bridge_invoked": state.bridge_invoked,
@@ -415,6 +431,11 @@ def load_round_state_file(path: Path) -> RoundState:
     bridge_invoked = payload.get("bridge_invoked")
     if not isinstance(bridge_invoked, bool):
         raise ProtocolError(f"Field 'bridge_invoked' in {path} must be a boolean.")
+    gpt_input_path = payload.get("gpt_input_path")
+    if gpt_input_path is None:
+        gpt_input_path = relative_repo_path(path.parent / GPT_INPUT_FILENAME)
+    elif not isinstance(gpt_input_path, str) or not gpt_input_path.strip():
+        raise ProtocolError(f"Field 'gpt_input_path' in {path} must be a non-empty string.")
     return RoundState(
         schema_version=_require_string(payload, "schema_version"),
         round_id=normalize_round_id(_require_string(payload, "round_id")),
@@ -422,6 +443,7 @@ def load_round_state_file(path: Path) -> RoundState:
         decision_file=_require_string(payload, "decision_file"),
         codex_request_path=_require_string(payload, "codex_request_path"),
         codex_report_path=_require_string(payload, "codex_report_path"),
+        gpt_input_path=gpt_input_path.strip(),
         run_dir=str(payload.get("run_dir", "")).strip(),
         training_return_code=training_return_code,
         bridge_invoked=bridge_invoked,
@@ -438,6 +460,7 @@ def ensure_round_state_file(
     decision_file: Path,
     codex_request_path: Path,
     codex_report_path: Path,
+    gpt_input_path: Path,
 ) -> Path:
     path = round_state_path(round_dir)
     if not path.exists():
@@ -448,6 +471,7 @@ def ensure_round_state_file(
                 decision_file=decision_file,
                 codex_request_path=codex_request_path,
                 codex_report_path=codex_report_path,
+                gpt_input_path=gpt_input_path,
             ),
         )
     return path
@@ -458,7 +482,7 @@ def update_round_state_file(path: Path, **changes: Any) -> RoundState:
     for key, value in changes.items():
         if not hasattr(state, key):
             raise ProtocolError(f"Unknown round_state field '{key}'.")
-        if key in {"decision_file", "codex_request_path", "codex_report_path", "run_dir"}:
+        if key in {"decision_file", "codex_request_path", "codex_report_path", "gpt_input_path", "run_dir"}:
             if value is None:
                 value = ""
             elif isinstance(value, Path):
@@ -530,6 +554,83 @@ def render_compare_target_line(target: ResolvedCompareTarget) -> str:
     return f"- {target.label}: {target.value}"
 
 
+def format_parameter_changes_markdown(parameter_changes: list[ParameterChange]) -> str:
+    if parameter_changes:
+        lines = [
+            "| Parameter | Old | New | Delta | Reason |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        for change in parameter_changes:
+            lines.append(
+                f"| `{change.name}` | `{change.old_value}` | `{change.new_value}` | "
+                f"`{change.delta}` | {change.reason} |"
+            )
+        return "\n".join(lines)
+    return "No parameter changes were recorded in `gpt_decision.json`."
+
+
+def codex_report_is_ready(round_id: str, report_text: str) -> tuple[bool, str]:
+    stripped_report = report_text.strip()
+    if not stripped_report:
+        return False, "codex_report.md was empty."
+    if stripped_report == render_codex_report_stub(round_id).strip():
+        return False, "codex_report.md is still the untouched template stub."
+
+    lines = report_text.splitlines()
+    inline_required_fields = {
+        "- Target run:",
+        "1.",
+        "2.",
+        "3.",
+    }
+    block_required_fields = {
+        "- Logs inspected:",
+        "- Plots inspected:",
+        "- Checkpoints inspected:",
+        "- Reward:",
+        "- Coverage:",
+        "- Success rate:",
+        "- Loss:",
+        "- Compare target 1:",
+        "- Compare target 2:",
+        "- train_steps.csv:",
+        "- train_episodes.csv:",
+        "- eval_metrics.csv:",
+        "- final_probe.csv:",
+        "- reward_curve.png:",
+        "- coverage_curve.png:",
+        "- success_rate_curve.png:",
+        "- loss_curve.png:",
+        "- Recommended next step:",
+        "- Confidence / caveat:",
+    }
+
+    def next_non_empty_line(index: int) -> str | None:
+        for next_index in range(index + 1, len(lines)):
+            candidate = lines[next_index]
+            if candidate.strip():
+                return candidate
+        return None
+
+    unresolved_placeholders: list[str] = []
+    for index, raw_line in enumerate(lines):
+        stripped_line = raw_line.strip()
+        if stripped_line in inline_required_fields:
+            unresolved_placeholders.append(stripped_line)
+            continue
+        if stripped_line in block_required_fields:
+            next_line = next_non_empty_line(index)
+            if next_line is None or not next_line.startswith(("  ", "\t")):
+                unresolved_placeholders.append(stripped_line)
+    if unresolved_placeholders:
+        deduped = list(dict.fromkeys(unresolved_placeholders))
+        return False, (
+            "codex_report.md still contains unfilled template placeholders: "
+            + ", ".join(deduped[:5])
+        )
+    return True, ""
+
+
 def resolve_compare_targets(decision: GPTDecision, current_round_id: str) -> list[ResolvedCompareTarget]:
     resolved_targets: list[ResolvedCompareTarget] = []
     seen: set[tuple[str, str, bool]] = set()
@@ -595,6 +696,87 @@ def resolve_compare_targets(decision: GPTDecision, current_round_id: str) -> lis
     return resolved_targets
 
 
+def render_gpt_input_package(
+    *,
+    decision: GPTDecision,
+    round_state: RoundState,
+    codex_request_text: str,
+    codex_report_text: str,
+) -> str:
+    request_lines = [line.rstrip() for line in codex_request_text.splitlines()]
+    required_file_lines = [
+        line.strip()
+        for line in request_lines
+        if line.strip().startswith("- `") and ("/logs/" in line or "/plots/" in line)
+    ]
+    question_lines = [
+        line.strip()
+        for line in request_lines
+        if re.match(r"^\d+\.\s", line.strip())
+    ]
+    compare_target_lines = [render_compare_target_line(item) for item in resolve_compare_targets(decision, decision.round_id)]
+    manual_reference_lines = [
+        f"- Manual compare target: `{item}`" for item in decision.reference_targets.manual_compare_targets
+    ]
+    if not required_file_lines:
+        required_file_lines = ["- No focused files were extracted from codex_request.md."]
+    if not question_lines:
+        question_lines = ["- No numbered questions were extracted from codex_request.md."]
+    if not manual_reference_lines:
+        manual_reference_lines = ["- Manual compare target: UNSET"]
+    report_body = codex_report_text.strip()
+    gpt_input_path = round_state.gpt_input_path or relative_repo_path(rounds_root() / decision.round_id / GPT_INPUT_FILENAME)
+    parameter_summary = format_parameter_changes_markdown(decision.parameter_changes)
+    best_known_reference_text = decision.reference_targets.best_known_reference or "UNSET"
+
+    return "\n".join(
+        [
+            "# GPT Input Package",
+            "",
+            "## 1. Round metadata",
+            f"- Round id: `{round_state.round_id}`",
+            f"- Round state status: `{round_state.status}`",
+            f"- Run directory: `{round_state.run_dir or 'UNSET'}`",
+            f"- Training return code: `{round_state.training_return_code}`",
+            f"- Bridge status: `{round_state.bridge_status}`",
+            "",
+            "## 2. Previous decision summary",
+            f"- Decision status: `{decision.decision_status}`",
+            f"- Target program: `{decision.target_program}`",
+            "- Parameter changes:",
+            parameter_summary,
+            "- Compare target requests:",
+            *[f"  {line}" for line in compare_target_lines],
+            "- Raw compare target tokens from decision:",
+            *[f"  - `{item}`" for item in decision.codex_analysis_focus.compare_targets],
+            "- Explicit reference targets:",
+            f"  - Best known reference: `{best_known_reference_text}`",
+            *[f"  {line}" for line in manual_reference_lines],
+            "",
+            "## 3. Codex request summary",
+            "- Required files / focus objects:",
+            *[f"  {line}" for line in required_file_lines],
+            "- Core questions from codex_request.md:",
+            *[f"  {line}" for line in question_lines],
+            "",
+            "## 4. Codex report",
+            report_body,
+            "",
+            "## 5. What GPT should decide next",
+            "- Decide whether to continue to another round or stop.",
+            "- If continuing, specify which parameters should change, in what direction, and by approximately how much.",
+            "- Decide whether the next round needs updated Codex analysis focus or different required logs / plots.",
+            "- Decide whether compare targets should be updated, including any explicit best-known reference.",
+            "",
+            "## 6. Output contract",
+            f"- Produce the next full `gpt_decision.json` content for a future round in this repository.",
+            "- Include the next round decision_status, target_program, run_args, parameter_changes, codex_analysis_focus, reference_targets, and controller_notes.",
+            "- Explicitly state the next round Codex analysis focus and compare targets.",
+            f"- This GPT input package was generated from `{gpt_input_path}`.",
+        ]
+    )
+
+
 def render_codex_request(
     decision: GPTDecision,
     run_dir: Path,
@@ -607,19 +789,7 @@ def render_codex_request(
     compares = [render_compare_target_line(item) for item in compare_targets]
     questions = [f"{index}. {question}" for index, question in enumerate(decision.codex_analysis_focus.questions, start=1)]
 
-    if decision.parameter_changes:
-        parameter_lines = [
-            "| Parameter | Old | New | Delta | Reason |",
-            "| --- | --- | --- | --- | --- |",
-        ]
-        for change in decision.parameter_changes:
-            parameter_lines.append(
-                f"| `{change.name}` | `{change.old_value}` | `{change.new_value}` | "
-                f"`{change.delta}` | {change.reason} |"
-            )
-        parameter_summary = "\n".join(parameter_lines)
-    else:
-        parameter_summary = "No parameter changes were recorded in `gpt_decision.json`."
+    parameter_summary = format_parameter_changes_markdown(decision.parameter_changes)
 
     report_target = relative_repo_path(round_dir / "codex_report.md")
     return "\n".join(
