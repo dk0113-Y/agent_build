@@ -1,2 +1,3 @@
 uiautomation==2.0.29
 pyperclip==1.11.0
+matplotlib==3.9.2
