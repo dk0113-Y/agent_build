@@ -14,6 +14,7 @@ Codex bridge for one-way delivery into the desktop app.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 import time
@@ -315,6 +316,45 @@ def parse_bridge_stdout(stdout: str) -> dict[str, str]:
     return parsed
 
 
+def load_bridge_log_payload(log_path: str) -> dict[str, object]:
+    if not log_path:
+        return {}
+    try:
+        return json.loads(Path(log_path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def bridge_send_confirmed(status: str) -> bool:
+    return status == "sent_only"
+
+
+def resolve_bridge_error(
+    *,
+    status: str,
+    return_code: int,
+    parsed_stdout: dict[str, str] | None = None,
+    log_payload: dict[str, object] | None = None,
+    stderr_text: str = "",
+    stdout_text: str = "",
+) -> str:
+    parsed_stdout = parsed_stdout or {}
+    log_payload = log_payload or {}
+    reason = str(
+        parsed_stdout.get("send_confirmation_reason")
+        or log_payload.get("send_confirmation_reason")
+        or log_payload.get("message")
+        or stderr_text.strip()
+        or stdout_text.strip()
+        or ""
+    ).strip()
+    if bridge_send_confirmed(status) and return_code == 0:
+        return ""
+    if reason:
+        return reason
+    return f"Bridge send was not confirmed (status={status}, return_code={return_code})."
+
+
 def invoke_codex_bridge(
     *,
     codex_request_path: Path,
@@ -337,12 +377,18 @@ def invoke_codex_bridge(
     if manual_confirm_send:
         completed = subprocess.run(command, cwd=str(repo_root()))
         log_path = detect_new_bridge_log(before_logs)
+        log_payload = load_bridge_log_payload(log_path)
+        status = str(log_payload.get("status") or ("sent_only" if completed.returncode == 0 else "failed"))
         return BridgeInvocationResult(
             invoked=True,
-            status="sent_only" if completed.returncode == 0 else "failed",
+            status=status,
             return_code=completed.returncode,
             log_path=log_path,
-            error="" if completed.returncode == 0 else "Bridge process returned a non-zero exit code.",
+            error=resolve_bridge_error(
+                status=status,
+                return_code=completed.returncode,
+                log_payload=log_payload,
+            ),
         )
 
     completed = subprocess.run(
@@ -353,16 +399,21 @@ def invoke_codex_bridge(
     )
     parsed_stdout = parse_bridge_stdout(completed.stdout or "")
     log_path = parsed_stdout.get("log") or detect_new_bridge_log(before_logs)
-    status = parsed_stdout.get("status", "sent_only" if completed.returncode == 0 else "failed")
-    error_text = ""
-    if completed.returncode != 0:
-        error_text = (completed.stderr or completed.stdout or "Bridge process returned a non-zero exit code.").strip()
+    log_payload = load_bridge_log_payload(log_path)
+    status = parsed_stdout.get("status") or str(log_payload.get("status") or ("sent_only" if completed.returncode == 0 else "failed"))
     return BridgeInvocationResult(
         invoked=True,
         status=status,
         return_code=completed.returncode,
         log_path=log_path,
-        error=error_text,
+        error=resolve_bridge_error(
+            status=status,
+            return_code=completed.returncode,
+            parsed_stdout=parsed_stdout,
+            log_payload=log_payload,
+            stderr_text=completed.stderr or "",
+            stdout_text=completed.stdout or "",
+        ),
     )
 
 

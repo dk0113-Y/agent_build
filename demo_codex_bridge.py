@@ -115,6 +115,9 @@ class DemoResult:
     expected_token: str = ""
     sent_message_source: str = "ack"
     message_path: str = ""
+    message_probe: str = ""
+    send_confirmation_status: str = ""
+    send_confirmation_reason: str = ""
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -137,6 +140,27 @@ def build_prompt(token: str) -> str:
         "请忽略其它上下文，只回复下面这一行，不要添加任何其它内容：\n"
         f"{token}"
     )
+
+
+def build_message_probe(message: str, max_chars: int = 80) -> str:
+    generic_heading_prefixes = ("# ", "## ")
+    generic_exact_lines = {
+        "# Codex Analysis Request",
+        "# GPT Input Package",
+    }
+    non_empty_lines = [raw_line.strip() for raw_line in message.splitlines() if raw_line.strip()]
+    for candidate in non_empty_lines:
+        if candidate in generic_exact_lines:
+            continue
+        if candidate.startswith(generic_heading_prefixes):
+            continue
+        return candidate[:max_chars]
+    for candidate in non_empty_lines:
+        return candidate[:max_chars]
+    collapsed = " ".join(message.split())
+    if not collapsed:
+        raise RuntimeError("Could not derive a non-empty message probe.")
+    return collapsed[:max_chars]
 
 
 def load_message_override(message_file: Path | None, message_text: str | None) -> tuple[str | None, str, str]:
@@ -347,7 +371,12 @@ class CodexBridge:
         click_point(composer_rect.center_x, composer_rect.center_y)
         return composer_rect
 
-    def send_prompt(self, prompt: str, manual_confirm_send: bool = False) -> dict[str, Any]:
+    def send_prompt(
+        self,
+        prompt: str,
+        manual_confirm_send: bool = False,
+        message_probe: str | None = None,
+    ) -> dict[str, Any]:
         assert self.window is not None
         self.activate()
         self.maybe_scroll_to_bottom()
@@ -355,6 +384,9 @@ class CodexBridge:
         pyperclip.copy(prompt)
         hotkey(VK_CONTROL, VK_V)
         time.sleep(self.config["after_paste_wait_sec"])
+        probe_post_paste_count = None
+        if message_probe:
+            probe_post_paste_count, _, _ = self.count_token_in_ui(message_probe)
         send_button = self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
         if manual_confirm_send:
             input("Prompt is pasted. Press Enter here to continue with send...")
@@ -371,6 +403,10 @@ class CodexBridge:
         return {
             "composer_rect": composer_rect.to_dict(),
             "send_button": self._ctrl_summary(send_button),
+            "paste_completed": True,
+            "send_attempted": True,
+            "send_method": self.config.get("send_method", "button"),
+            "message_probe_post_paste_count": probe_post_paste_count,
         }
 
     def maybe_scroll_to_bottom(self) -> None:
@@ -479,6 +515,94 @@ class CodexBridge:
             },
         )
 
+    def confirm_message_delivery(
+        self,
+        *,
+        message_probe: str,
+        baseline_count: int,
+        post_paste_count: int,
+        composer_rect: Rect,
+    ) -> dict[str, Any]:
+        timeout_sec = float(self.config.get("send_confirmation_timeout_sec", 6.0))
+        poll_sec = float(self.config.get("send_confirmation_poll_sec", 0.5))
+        deadline = time.time() + timeout_sec
+        last_count = post_paste_count
+        last_matches: list[str] = []
+        last_visible_count = 0
+        last_send_button = self._ctrl_summary(
+            self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
+        )
+        while time.time() < deadline:
+            refreshed_root = self._find_root_web_area()
+            if refreshed_root is not None:
+                self.root = refreshed_root
+            self.maybe_scroll_to_bottom()
+            count, matches, texts = self.count_token_in_ui(message_probe)
+            send_button_summary = self._ctrl_summary(
+                self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
+            )
+            send_button_unavailable = self._is_send_button_unavailable(send_button_summary)
+            last_count = count
+            last_matches = matches
+            last_visible_count = len(texts)
+            last_send_button = send_button_summary
+            if count >= max(baseline_count + 1, post_paste_count + 1):
+                return {
+                    "success": True,
+                    "status": "confirmed_by_probe_count_increase",
+                    "reason": "Message probe appeared in visible UI text with a new post-send instance.",
+                    "message_probe_post_send_count": count,
+                    "post_send_matching_texts": matches,
+                    "post_send_visible_text_count": len(texts),
+                    "post_send_send_button": send_button_summary,
+                    "composer_probe_status": "not_checked",
+                }
+            if count >= baseline_count + 1 and send_button_unavailable:
+                composer_probe = self._probe_in_composer(composer_rect, message_probe)
+                if not composer_probe["probe_present"]:
+                    status = (
+                        "confirmed_by_probe_visible_and_cleared_composer"
+                        if composer_probe["status"] == "probe_not_present"
+                        else "delivered_with_weak_confirmation"
+                    )
+                    reason = (
+                        "Message probe was visible after send and no longer present in composer."
+                        if composer_probe["status"] == "probe_not_present"
+                        else "Message probe was visible after send and send button was unavailable; composer copy was empty."
+                    )
+                    return {
+                        "success": True,
+                        "status": status,
+                        "reason": reason,
+                        "message_probe_post_send_count": count,
+                        "post_send_matching_texts": matches,
+                        "post_send_visible_text_count": len(texts),
+                        "post_send_send_button": send_button_summary,
+                        "composer_probe_status": composer_probe["status"],
+                    }
+            time.sleep(poll_sec)
+
+        composer_probe = self._probe_in_composer(composer_rect, message_probe)
+        reason = "Message delivery could not be confirmed before timeout."
+        if composer_probe["probe_present"]:
+            reason = "Message probe was still present in the composer after the send attempt."
+        elif not self._is_send_button_unavailable(last_send_button):
+            reason = "Message probe did not show a new visible instance and the send button remained available after the send attempt."
+        elif last_count < baseline_count + 1:
+            reason = "Message probe never appeared in visible Codex text after the send attempt."
+        elif last_count < post_paste_count + 1:
+            reason = "Message probe did not show a new visible instance beyond the pre-send state."
+        return {
+            "success": False,
+            "status": "send_not_confirmed",
+            "reason": reason,
+            "message_probe_post_send_count": last_count,
+            "post_send_matching_texts": last_matches,
+            "post_send_visible_text_count": last_visible_count,
+            "post_send_send_button": last_send_button,
+            "composer_probe_status": composer_probe["status"],
+        }
+
     def _ctrl_summary(self, ctrl: auto.Control | None) -> dict[str, Any] | None:
         if ctrl is None:
             return None
@@ -488,10 +612,46 @@ class CodexBridge:
                 "name": ctrl.Name or "",
                 "automation_id": ctrl.AutomationId or "",
                 "control_type": ctrl.ControlTypeName or "",
+                "enabled": bool(getattr(ctrl, "IsEnabled", True)),
                 "rect": None if rect is None else rect.to_dict(),
             }
         except Exception:
             return None
+
+    def _is_send_button_unavailable(self, summary: dict[str, Any] | None) -> bool:
+        if summary is None:
+            return True
+        return summary.get("enabled") is False
+
+    def _probe_in_composer(self, composer_rect: Rect, message_probe: str) -> dict[str, Any]:
+        clipboard_before = pyperclip.paste() or ""
+        sentinel = f"__CODEX_BRIDGE_SENTINEL__::{now_ts()}__"
+        try:
+            pyperclip.copy(sentinel)
+            click_point(composer_rect.center_x, composer_rect.center_y)
+            hotkey(VK_CONTROL, VK_A)
+            hotkey(VK_CONTROL, VK_C)
+            time.sleep(0.2)
+            copied = pyperclip.paste() or ""
+        finally:
+            try:
+                pyperclip.copy(clipboard_before)
+            except Exception:
+                pass
+        if copied == sentinel:
+            return {
+                "probe_present": False,
+                "status": "empty_or_unavailable",
+            }
+        if message_probe in copied:
+            return {
+                "probe_present": True,
+                "status": "probe_present",
+            }
+        return {
+            "probe_present": False,
+            "status": "probe_not_present",
+        }
 
     def _find_button_by_name(self, name: str) -> auto.Control | None:
         assert self.root is not None
@@ -643,10 +803,17 @@ def run_send_or_demo(
         "manual_confirm_send": manual_confirm_send,
         "dry_run": dry_run,
         "sent_message_source": sent_message_source,
+        "message_probe": "",
+        "message_probe_baseline_count": None,
+        "message_probe_post_paste_count": None,
+        "message_probe_post_send_count": None,
+        "send_confirmation_status": "",
+        "send_confirmation_reason": "",
     }
     if message_path:
         payload["message_path"] = message_path
     try:
+        message_probe = ""
         if prompt_override is None:
             token = build_token(config["ack_prefix"])
             prompt = build_prompt(token)
@@ -655,6 +822,11 @@ def run_send_or_demo(
             token = ""
             prompt = prompt_override
             payload["expected_token"] = ""
+            message_probe = build_message_probe(
+                prompt,
+                max_chars=int(config.get("message_probe_max_chars", 80)),
+            )
+            payload["message_probe"] = message_probe
         payload["sent_prompt"] = prompt
 
         bridge.attach()
@@ -666,6 +838,9 @@ def run_send_or_demo(
             baseline_count = 0
             payload["baseline_token_occurrence_count"] = None
             payload["baseline_visible_text_count"] = None
+            probe_baseline_count, _, baseline_texts = bridge.count_token_in_ui(message_probe)
+            payload["message_probe_baseline_count"] = probe_baseline_count
+            payload["baseline_visible_text_count"] = len(baseline_texts)
 
         if dry_run:
             payload["status"] = "dry_run"
@@ -681,25 +856,65 @@ def run_send_or_demo(
                 expected_token=token,
                 sent_message_source=sent_message_source,
                 message_path=message_path,
+                message_probe=message_probe,
             )
 
-        send_meta = bridge.send_prompt(prompt, manual_confirm_send=manual_confirm_send)
+        send_meta = bridge.send_prompt(
+            prompt,
+            manual_confirm_send=manual_confirm_send,
+            message_probe=message_probe or None,
+        )
         payload["send_meta"] = send_meta
+        if message_probe:
+            payload["message_probe_post_paste_count"] = send_meta["message_probe_post_paste_count"]
 
         if send_only:
-            payload["status"] = "sent_only"
-            payload["success"] = True
-            payload["message"] = "Prompt was sent without waiting for a reply."
+            if message_probe:
+                composer_rect_dict = send_meta["composer_rect"]
+                confirmation = bridge.confirm_message_delivery(
+                    message_probe=message_probe,
+                    baseline_count=payload["message_probe_baseline_count"],
+                    post_paste_count=payload["message_probe_post_paste_count"],
+                    composer_rect=Rect(
+                        left=int(composer_rect_dict["left"]),
+                        top=int(composer_rect_dict["top"]),
+                        right=int(composer_rect_dict["right"]),
+                        bottom=int(composer_rect_dict["bottom"]),
+                    ),
+                )
+                payload["message_probe_post_send_count"] = confirmation["message_probe_post_send_count"]
+                payload["send_confirmation_status"] = confirmation["status"]
+                payload["send_confirmation_reason"] = confirmation["reason"]
+                payload["send_confirmation_meta"] = {
+                    "post_send_matching_texts": confirmation["post_send_matching_texts"],
+                    "post_send_visible_text_count": confirmation["post_send_visible_text_count"],
+                    "post_send_send_button": confirmation["post_send_send_button"],
+                    "composer_probe_status": confirmation["composer_probe_status"],
+                }
+                payload["status"] = "sent_only" if confirmation["success"] else "send_not_confirmed"
+                payload["success"] = bool(confirmation["success"])
+                payload["message"] = (
+                    "Prompt was sent and minimally confirmed in the Codex UI."
+                    if confirmation["success"]
+                    else confirmation["reason"]
+                )
+            else:
+                payload["status"] = "sent_only"
+                payload["success"] = True
+                payload["message"] = "Prompt was sent without waiting for a reply."
             write_log(log_path, payload)
             return DemoResult(
-                True,
-                "sent_only",
+                bool(payload["success"]),
+                payload["status"],
                 payload["message"],
                 log_path,
                 sent_prompt=prompt,
                 expected_token=token,
                 sent_message_source=sent_message_source,
                 message_path=message_path,
+                message_probe=message_probe,
+                send_confirmation_status=payload.get("send_confirmation_status", ""),
+                send_confirmation_reason=payload.get("send_confirmation_reason", ""),
             )
 
         success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
@@ -726,6 +941,7 @@ def run_send_or_demo(
             expected_token=token,
             sent_message_source=sent_message_source,
             message_path=message_path,
+            message_probe=message_probe,
         )
     except Exception as exc:
         payload["status"] = "error"
@@ -787,6 +1003,12 @@ def main() -> int:
     print(f"sent_message_source={result.sent_message_source}")
     if result.message_path:
         print(f"message_path={result.message_path}")
+    if result.message_probe:
+        print(f"message_probe={result.message_probe}")
+    if result.send_confirmation_status:
+        print(f"send_confirmation_status={result.send_confirmation_status}")
+    if result.send_confirmation_reason:
+        print(f"send_confirmation_reason={result.send_confirmation_reason}")
     if result.reply_text:
         print("reply_detected=yes")
     return 0 if result.success else 1
