@@ -2,3 +2,4 @@ __pycache__/
 logs/
 @AutomationLog.txt
 outputs/
+automation_rounds/

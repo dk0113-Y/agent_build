@@ -1,11 +1,13 @@
 # Codex UI Bridge Demo
 
-这是一个独立于当前 DRL 主工程的本地自动化 demo 仓库。当前仓库里有两条彼此分开的本地链路：
+这是一个独立于当前 DRL 主工程的本地自动化 demo 仓库。当前仓库里有三层彼此分开的内容：
 
 1. `demo_codex_bridge.py`
    本地 Codex GUI 通信 demo。通过 Windows UI Automation 和少量键鼠模拟，与已经打开的 Codex 桌面应用交互。
 2. `fake_train.py + scheduler.py`
-   本地训练完成检测 demo。通过假训练脚本逐步生成训练样式产物，再由最小调度器判断“训练是否完成”。
+   假训练 + 完成检测 demo。通过假训练脚本逐步生成训练样式产物，再由最小调度器判断“训练是否完成”。
+3. 协议层 / round 层
+   通过 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`tuning_policy.md`、`prepare_round.py` 把控制平面协议和文件握手层搭起来。
 
 当前仓库仍然不是成熟闭环系统。它没有接入 OpenAI API，没有依赖网页接口，也没有把“训练完成 -> 自动唤醒 Codex -> 自动改代码”串起来。
 
@@ -29,18 +31,30 @@ pip install -r requirements.txt
   Codex GUI 通信主脚本。支持 `--inspect-ui`、`--send-only`、`--demo`、`--dry-run`、`--manual-confirm-send`。
 - `config.json`
   Codex GUI 定位与等待参数。
+- `config_new_thread.json`
+  与 `config.json` 基本一致，但会先点击 `新线程`，便于把自动发送隔离到新的会话中。
 - `fake_train.py`
   生成单次假训练输出。会在 `outputs/<run_name>/` 下逐步写入 `checkpoints/`、`logs/`、`plots/`。
 - `scheduler.py`
-  最小调度器。它自己启动 `fake_train.py` 子进程，等待新的 run 目录出现，再等待子进程退出，最后做关键产物校验。
-- `requirements.txt`
-  运行本仓库 demo 所需的最小依赖列表。
+  最小调度器。支持直参模式和 `--decision-file` 模式。它自己启动 `fake_train.py` 子进程，等待新的 run 目录出现，再等待子进程退出，最后做关键产物校验。
+- `automation_protocol.py`
+  协议层 helper。定义 decision schema、round 编号、模板读取、decision 校验、`codex_request.md` 渲染等辅助函数。
+- `prepare_round.py`
+  round 初始化工具。创建 `automation_rounds/round_0001/` 这种目录，并放入 `gpt_decision.json`、`codex_request.md`、`codex_report.md`。
+- `templates/gpt_decision.template.json`
+  `gpt_decision.json` 模板。
+- `templates/codex_report.template.md`
+  `codex_report.md` 模板。
+- `tuning_policy.md`
+  当前自动化骨架允许的调参字段、记录方式和待补充项模板。
 - `logs/`
   Codex GUI bridge 的 inspect / run 日志目录。
 - `outputs/`
   假训练 run 输出目录。该目录已加入 `.gitignore`。
+- `automation_rounds/`
+  协议层 round 运行目录。该目录已加入 `.gitignore`，运行时由 `prepare_round.py` 创建。
 
-## 链路一：Codex GUI 通信 demo
+## 第一层：Codex GUI 通信 demo
 
 目标链路：
 
@@ -83,27 +97,14 @@ python demo_codex_bridge.py --demo --manual-confirm-send
 python demo_codex_bridge.py --demo --dry-run
 ```
 
-### 当前 ack prompt 模板
-
-脚本会自动生成唯一 token，例如：
-
-`AUTOMATION_DEMO_ACK::20260411_142401::96NTI9`
-
-实际发送的消息模板是：
-
-```text
-请忽略其它上下文，只回复下面这一行，不要添加任何其它内容：
-AUTOMATION_DEMO_ACK::<timestamp>::<random_id>
-```
-
 ### 当前限制
 
 1. 当前 Codex 桌面 UI 的聊天输入区并没有稳定暴露成标准 `EditControl`。
 2. 发送按钮通常只能通过“与 `添加文件等` 同一行的最右侧按钮”推断。
 3. 回复读取优先走 `RootWebArea` 下的 `TextControl`，失败后才回退到剪贴板复制。
-4. 当前 bridge demo 仍不是稳定闭环，只能视为本地 GUI 自动化验证。
+4. 当前 bridge demo 仍是本地 GUI 自动化验证，不是稳定闭环。
 
-## 链路二：假训练 + 最小调度器 demo
+## 第二层：假训练 + 最小调度器 demo
 
 当前 phase 1 的目标只有两个：
 
@@ -176,6 +177,99 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 1. `scheduler.py` 当前只检测它自己启动的训练子进程，不负责接管任意外部训练任务。
 2. `scheduler.py` 当前不会自动唤醒 Codex，也不会调用 `demo_codex_bridge.py`。
 3. 当前 phase 只验证“训练输出形态”和“完成检测逻辑”，不是完整自动决策系统。
+
+## 第三层：协议层 / round 层
+
+这一层的目标是把未来自动化链路的控制平面协议搭起来：
+
+`GPT -> gpt_decision.json -> scheduler 启动训练 -> 训练完成 -> scheduler 生成 codex_request.md -> 后续由 bridge 发给 Codex -> Codex 产出 codex_report.md -> 后续再交回 GPT`
+
+当前只实现到：
+
+- `prepare_round.py` 创建 round 目录和模板文件
+- `scheduler.py --decision-file ...` 读取 `gpt_decision.json`
+- 训练成功后由 scheduler 自动生成 `codex_request.md`
+- round 目录中预置 `codex_report.md` 模板
+
+当前还没有：
+
+- 网页端 GPT bridge
+- OpenAI API
+- scheduler 自动调用 `demo_codex_bridge.py`
+- Codex 自动写回 `codex_report.md`
+
+### round 目录结构
+
+`prepare_round.py` 默认会创建：
+
+```text
+automation_rounds/round_0001/
+  gpt_decision.json
+  codex_request.md
+  codex_report.md
+```
+
+### 运行方式
+
+初始化一个新的 round：
+
+```bash
+python prepare_round.py
+```
+
+也可以显式指定 round id：
+
+```bash
+python prepare_round.py --round-id round_0003
+```
+
+用 decision file 驱动 scheduler：
+
+```bash
+python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json
+```
+
+### `gpt_decision.json` 的最小 schema
+
+当前协议层至少包含这些字段：
+
+- `schema_version`
+- `round_id`
+- `decision_status`
+- `target_program`
+- `run_args`
+- `parameter_changes`
+- `codex_analysis_focus`
+- `controller_notes`
+
+其中：
+
+- `decision_status` 当前允许：`run_next_round`、`hold`、`stop`
+- `target_program` 当前实际支持的是 `fake_train.py`
+- `run_args` 当前映射到 `fake_train.py` 的参数
+- `codex_analysis_focus` 用于后续生成结构化 `codex_request.md`
+
+### `codex_request.md` 的作用
+
+`scheduler.py` 在 `decision_status=run_next_round` 且训练完成校验成功后，会结合：
+
+- 本轮 `gpt_decision.json`
+- 实际检测到的 `run_dir`
+
+自动渲染 `codex_request.md`。这个文件是给后续 bridge / Codex 使用的固定握手面，不应该再重新发明协议。
+
+### `codex_report.md` 的作用
+
+`codex_report.md` 当前只是模板 / stub，供后续 Codex 填写。当前仓库还没有自动生成该报告。
+
+### `tuning_policy.md` 的作用
+
+`tuning_policy.md` 当前不是最终科研调参结论，只是：
+
+- 当前自动化 demo 已支持参数的结构化说明
+- 建议记录方式
+- 风险控制规则
+- 明确待补充项
 
 ## Codex bridge 配置提示
 
