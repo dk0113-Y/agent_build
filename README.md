@@ -28,7 +28,7 @@ pip install -r requirements.txt
 ## 当前文件说明
 
 - `demo_codex_bridge.py`
-  Codex GUI 通信主脚本。支持 `--inspect-ui`、`--send-only`、`--demo`、`--dry-run`、`--manual-confirm-send`，并支持通过 `--message-file` / `--message-text` 发送任意文本。
+  Codex GUI 通信主脚本。支持 `--inspect-ui`、`--send-only`、`--demo`、`--dry-run`、`--manual-confirm-send`，并支持通过 `--message-file` / `--message-text` 发送任意文本。当前 `--send-only --message-file` / `--message-text` 会做最小送达确认。
 - `config.json`
   Codex GUI 定位与等待参数。
 - `config_new_thread.json`
@@ -81,6 +81,12 @@ python demo_codex_bridge.py --inspect-ui
 python demo_codex_bridge.py --send-only
 ```
 
+也可以直接发送任意 Markdown / 文本，并做最小送达确认：
+
+```bash
+python demo_codex_bridge.py --send-only --message-file automation_rounds/round_0001/codex_request.md --config config_new_thread.json
+```
+
 3. 完整 demo
 
 ```bash
@@ -104,7 +110,8 @@ python demo_codex_bridge.py --demo --dry-run
 1. 当前 Codex 桌面 UI 的聊天输入区并没有稳定暴露成标准 `EditControl`。
 2. 发送按钮通常只能通过“与 `添加文件等` 同一行的最右侧按钮”推断。
 3. 回复读取优先走 `RootWebArea` 下的 `TextControl`，失败后才回退到剪贴板复制。
-4. 当前 bridge demo 仍是本地 GUI 自动化验证，不是稳定闭环。
+4. `status=sent_only` 现在表示“消息已发送并通过最小送达确认”；如果只是粘贴成功但未确认送达，会返回 `send_not_confirmed`。
+5. 当前仍然没有实现自动读回 Codex 分析结果，bridge demo 仍是本地 GUI 自动化验证，不是稳定闭环。
 
 ## 第二层：假训练 + 最小调度器 demo
 
@@ -357,4 +364,16 @@ python prepare_gpt_input.py --round-id round_0001
 - `detected_reply_text`
 - `success`
 - `status`
+- `message_probe`（`--send-only --message-file` / `--message-text` 时，默认取消息第一条非空行）
+- `message_probe_baseline_count`
+- `message_probe_post_paste_count`
+- `message_probe_post_send_count`
+- `send_confirmation_status`
+- `send_confirmation_reason`
 - `error` / `traceback`（失败时）
+
+其中 `--send-only --message-file` / `--message-text` 的状态语义是：
+
+- `sent_only` 表示文本已发送并通过最小送达确认。
+- `send_not_confirmed` 表示文本可能已经粘贴，但没有足够证据确认它已进入聊天记录区。
+- `send_confirmation_status` / `send_confirmation_reason` 用于记录最小确认的判定结果和原因。
