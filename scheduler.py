@@ -19,7 +19,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-
 from automation_protocol import (
     GPTDecision,
     ProtocolError,
@@ -63,6 +62,15 @@ class SchedulerContext:
     exit_status: str
 
 
+@dataclass
+class BridgeInvocationResult:
+    invoked: bool
+    status: str
+    return_code: int | str | None
+    log_path: str = ""
+    error: str = ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch fake training and validate completion.")
     parser.add_argument("--decision-file", type=Path, help="Path to gpt_decision.json for round-driven mode.")
@@ -74,6 +82,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--poll-sec", type=float, default=0.5)
     parser.add_argument("--run-dir-timeout-sec", type=float, default=20.0)
+    parser.add_argument("--invoke-codex-bridge", action="store_true", help="After a successful decision-driven run, send codex_request.md to the local Codex app.")
+    parser.add_argument("--bridge-config", type=Path, default=repo_root() / "config_new_thread.json", help="Config file to use when invoking demo_codex_bridge.py.")
+    parser.add_argument("--bridge-manual-confirm-send", action="store_true", help="Pass --manual-confirm-send to demo_codex_bridge.py when bridge invocation is enabled.")
     return parser.parse_args()
 
 
@@ -242,6 +253,86 @@ def validate_run_artifacts(run_dir: Path) -> ValidationResult:
     return ValidationResult(success=not missing_items, missing_items=missing_items)
 
 
+def bridge_logs_dir() -> Path:
+    path = repo_root() / "logs"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def snapshot_bridge_run_logs() -> set[str]:
+    return {str(path.resolve()) for path in bridge_logs_dir().glob("run_*.json")}
+
+
+def detect_new_bridge_log(before_logs: set[str]) -> str:
+    current_logs = snapshot_bridge_run_logs()
+    new_logs = sorted(current_logs - before_logs)
+    if new_logs:
+        return new_logs[-1]
+    return ""
+
+
+def parse_bridge_stdout(stdout: str) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for raw_line in stdout.splitlines():
+        line = raw_line.strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        parsed[key.strip()] = value.strip()
+    return parsed
+
+
+def invoke_codex_bridge(
+    *,
+    codex_request_path: Path,
+    bridge_config: Path,
+    manual_confirm_send: bool,
+) -> BridgeInvocationResult:
+    before_logs = snapshot_bridge_run_logs()
+    command = [
+        sys.executable,
+        str(repo_root() / "demo_codex_bridge.py"),
+        "--send-only",
+        "--message-file",
+        str(codex_request_path),
+        "--config",
+        str(bridge_config.resolve()),
+    ]
+    if manual_confirm_send:
+        command.append("--manual-confirm-send")
+
+    if manual_confirm_send:
+        completed = subprocess.run(command, cwd=str(repo_root()))
+        log_path = detect_new_bridge_log(before_logs)
+        return BridgeInvocationResult(
+            invoked=True,
+            status="sent_only" if completed.returncode == 0 else "failed",
+            return_code=completed.returncode,
+            log_path=log_path,
+            error="" if completed.returncode == 0 else "Bridge process returned a non-zero exit code.",
+        )
+
+    completed = subprocess.run(
+        command,
+        cwd=str(repo_root()),
+        capture_output=True,
+        text=True,
+    )
+    parsed_stdout = parse_bridge_stdout(completed.stdout or "")
+    log_path = parsed_stdout.get("log") or detect_new_bridge_log(before_logs)
+    status = parsed_stdout.get("status", "sent_only" if completed.returncode == 0 else "failed")
+    error_text = ""
+    if completed.returncode != 0:
+        error_text = (completed.stderr or completed.stdout or "Bridge process returned a non-zero exit code.").strip()
+    return BridgeInvocationResult(
+        invoked=True,
+        status=status,
+        return_code=completed.returncode,
+        log_path=log_path,
+        error=error_text,
+    )
+
+
 def emit_terminal_summary(
     *,
     status: str,
@@ -250,6 +341,7 @@ def emit_terminal_summary(
     return_code: int | str | None,
     missing_artifacts: list[str],
     codex_request_path: Path | None,
+    bridge_result: BridgeInvocationResult,
 ) -> None:
     print(f"status={status}", flush=True)
     print(f"round_dir={'' if round_dir is None else round_dir}", flush=True)
@@ -258,6 +350,13 @@ def emit_terminal_summary(
     print(f"missing_artifacts={missing_artifacts}", flush=True)
     if codex_request_path is not None:
         print(f"codex_request_path={codex_request_path}", flush=True)
+    print(f"bridge_invoked={'true' if bridge_result.invoked else 'false'}", flush=True)
+    print(f"bridge_status={bridge_result.status}", flush=True)
+    print(f"bridge_return_code={'' if bridge_result.return_code is None else bridge_result.return_code}", flush=True)
+    if bridge_result.log_path:
+        print(f"bridge_log_path={bridge_result.log_path}", flush=True)
+    if bridge_result.error:
+        print(f"bridge_error={bridge_result.error}", flush=True)
 
 
 def main() -> int:
@@ -265,6 +364,7 @@ def main() -> int:
     try:
         context = resolve_context(args)
     except ProtocolError as exc:
+        bridge_result = BridgeInvocationResult(False, "not_invoked", None)
         emit_terminal_summary(
             status="invalid_config",
             round_dir=None,
@@ -272,12 +372,15 @@ def main() -> int:
             return_code=None,
             missing_artifacts=[],
             codex_request_path=None,
+            bridge_result=bridge_result,
         )
         print(f"error={exc}", file=sys.stderr)
         return 1
 
+    bridge_result = BridgeInvocationResult(False, "not_invoked", None)
     codex_request_path = None if context.round_dir is None else context.round_dir / "codex_request.md"
     if not context.should_launch:
+        bridge_result = BridgeInvocationResult(False, f"skipped_{context.exit_status}", "not_started")
         emit_terminal_summary(
             status=context.exit_status,
             round_dir=context.round_dir,
@@ -285,6 +388,7 @@ def main() -> int:
             return_code="not_started",
             missing_artifacts=[],
             codex_request_path=codex_request_path,
+            bridge_result=bridge_result,
         )
         return 0
 
@@ -305,6 +409,7 @@ def main() -> int:
     )
     if run_dir is None:
         return_code = wait_for_process_exit(process, args.poll_sec)
+        bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
         emit_terminal_summary(
             status="failed",
             round_dir=context.round_dir,
@@ -312,6 +417,7 @@ def main() -> int:
             return_code=return_code,
             missing_artifacts=["run_dir_not_detected"],
             codex_request_path=codex_request_path,
+            bridge_result=bridge_result,
         )
         return 1
 
@@ -332,7 +438,18 @@ def main() -> int:
             render_codex_request(context.decision, run_dir=run_dir, round_dir=context.round_dir),
             encoding="utf-8",
         )
-        # Future hook: pass generated_request_path to demo_codex_bridge.py after this file is written.
+        if args.invoke_codex_bridge:
+            bridge_result = invoke_codex_bridge(
+                codex_request_path=generated_request_path,
+                bridge_config=args.bridge_config,
+                manual_confirm_send=args.bridge_manual_confirm_send,
+            )
+        else:
+            bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
+    elif args.invoke_codex_bridge:
+        bridge_result = BridgeInvocationResult(False, "skipped_no_codex_request", "not_started")
+    else:
+        bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
 
     emit_terminal_summary(
         status="success" if success else "failed",
@@ -341,6 +458,7 @@ def main() -> int:
         return_code=return_code,
         missing_artifacts=validation.missing_items if validation.missing_items else [],
         codex_request_path=generated_request_path if generated_request_path is not None else codex_request_path,
+        bridge_result=bridge_result,
     )
     return 0 if success else 1
 

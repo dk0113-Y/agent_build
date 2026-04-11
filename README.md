@@ -28,7 +28,7 @@ pip install -r requirements.txt
 ## 当前文件说明
 
 - `demo_codex_bridge.py`
-  Codex GUI 通信主脚本。支持 `--inspect-ui`、`--send-only`、`--demo`、`--dry-run`、`--manual-confirm-send`。
+  Codex GUI 通信主脚本。支持 `--inspect-ui`、`--send-only`、`--demo`、`--dry-run`、`--manual-confirm-send`，并支持通过 `--message-file` / `--message-text` 发送任意文本。
 - `config.json`
   Codex GUI 定位与等待参数。
 - `config_new_thread.json`
@@ -195,7 +195,6 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 
 - 网页端 GPT bridge
 - OpenAI API
-- scheduler 自动调用 `demo_codex_bridge.py`
 - Codex 自动写回 `codex_report.md`
 
 ### round 目录结构
@@ -229,6 +228,18 @@ python prepare_round.py --round-id round_0003
 python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json
 ```
 
+在训练成功后，把生成的 `codex_request.md` 自动发送到本地已打开的 Codex：
+
+```bash
+python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json --invoke-codex-bridge
+```
+
+调试版：
+
+```bash
+python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json --invoke-codex-bridge --bridge-manual-confirm-send
+```
+
 ### `gpt_decision.json` 的最小 schema
 
 当前协议层至少包含这些字段：
@@ -257,6 +268,9 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 - 实际检测到的 `run_dir`
 
 自动渲染 `codex_request.md`。这个文件是给后续 bridge / Codex 使用的固定握手面，不应该再重新发明协议。
+
+当前 `scheduler.py` 还可以在 `codex_request.md` 写出后，选择性自动调用 `demo_codex_bridge.py`，把这份 request 发送到本地 Codex 聊天窗口。
+这一步目前仍然只是单向发送 request，还没有实现分析结果自动读回、`codex_report.md` 自动回写或 GPT 决策回流。
 
 ### `codex_report.md` 的作用
 

@@ -113,6 +113,8 @@ class DemoResult:
     reply_text: str = ""
     sent_prompt: str = ""
     expected_token: str = ""
+    sent_message_source: str = "ack"
+    message_path: str = ""
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -135,6 +137,19 @@ def build_prompt(token: str) -> str:
         "请忽略其它上下文，只回复下面这一行，不要添加任何其它内容：\n"
         f"{token}"
     )
+
+
+def load_message_override(message_file: Path | None, message_text: str | None) -> tuple[str | None, str, str]:
+    if message_file is not None:
+        text = message_file.read_text(encoding="utf-8")
+        if not text.strip():
+            raise RuntimeError(f"Message file was empty: {message_file}")
+        return text, "file", str(message_file.resolve())
+    if message_text is not None:
+        if not message_text.strip():
+            raise RuntimeError("Message text was empty.")
+        return message_text, "text", ""
+    return None, "ack", ""
 
 
 def ensure_foreground(hwnd: int) -> None:
@@ -611,6 +626,9 @@ def run_send_or_demo(
     send_only: bool,
     manual_confirm_send: bool,
     dry_run: bool,
+    prompt_override: str | None = None,
+    sent_message_source: str = "ack",
+    message_path: str = "",
 ) -> DemoResult:
     bridge = CodexBridge(config, logs_dir)
     stamp = now_ts()
@@ -624,24 +642,46 @@ def run_send_or_demo(
         "config_path": config["config_path"],
         "manual_confirm_send": manual_confirm_send,
         "dry_run": dry_run,
+        "sent_message_source": sent_message_source,
     }
+    if message_path:
+        payload["message_path"] = message_path
     try:
-        token = build_token(config["ack_prefix"])
-        prompt = build_prompt(token)
-        payload["expected_token"] = token
+        if prompt_override is None:
+            token = build_token(config["ack_prefix"])
+            prompt = build_prompt(token)
+            payload["expected_token"] = token
+        else:
+            token = ""
+            prompt = prompt_override
+            payload["expected_token"] = ""
         payload["sent_prompt"] = prompt
 
         bridge.attach()
-        baseline_count, _, baseline_texts = bridge.count_token_in_ui(token)
-        payload["baseline_token_occurrence_count"] = baseline_count
-        payload["baseline_visible_text_count"] = len(baseline_texts)
+        if token:
+            baseline_count, _, baseline_texts = bridge.count_token_in_ui(token)
+            payload["baseline_token_occurrence_count"] = baseline_count
+            payload["baseline_visible_text_count"] = len(baseline_texts)
+        else:
+            baseline_count = 0
+            payload["baseline_token_occurrence_count"] = None
+            payload["baseline_visible_text_count"] = None
 
         if dry_run:
             payload["status"] = "dry_run"
             payload["success"] = True
             payload["message"] = "Dry-run only. No prompt was sent."
             write_log(log_path, payload)
-            return DemoResult(True, "dry_run", payload["message"], log_path, sent_prompt=prompt, expected_token=token)
+            return DemoResult(
+                True,
+                "dry_run",
+                payload["message"],
+                log_path,
+                sent_prompt=prompt,
+                expected_token=token,
+                sent_message_source=sent_message_source,
+                message_path=message_path,
+            )
 
         send_meta = bridge.send_prompt(prompt, manual_confirm_send=manual_confirm_send)
         payload["send_meta"] = send_meta
@@ -651,7 +691,16 @@ def run_send_or_demo(
             payload["success"] = True
             payload["message"] = "Prompt was sent without waiting for a reply."
             write_log(log_path, payload)
-            return DemoResult(True, "sent_only", payload["message"], log_path, sent_prompt=prompt, expected_token=token)
+            return DemoResult(
+                True,
+                "sent_only",
+                payload["message"],
+                log_path,
+                sent_prompt=prompt,
+                expected_token=token,
+                sent_message_source=sent_message_source,
+                message_path=message_path,
+            )
 
         success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
         payload["reply_detection"] = extra
@@ -675,6 +724,8 @@ def run_send_or_demo(
             reply_text=reply_text,
             sent_prompt=prompt,
             expected_token=token,
+            sent_message_source=sent_message_source,
+            message_path=message_path,
         )
     except Exception as exc:
         payload["status"] = "error"
@@ -693,6 +744,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--demo", action="store_true", help="Run the full bridge demo: focus, send, wait, read, log.")
     parser.add_argument("--dry-run", action="store_true", help="Print and log the planned action without sending.")
     parser.add_argument("--manual-confirm-send", action="store_true", help="Pause after paste and wait for Enter in console.")
+    parser.add_argument("--message-file", type=Path, help="Read message text from a file and send it to Codex.")
+    parser.add_argument("--message-text", help="Send the provided text to Codex.")
     return parser.parse_args()
 
 
@@ -700,6 +753,15 @@ def main() -> int:
     args = parse_args()
     if not any([args.inspect_ui, args.send_only, args.demo]):
         print("Choose one of: --inspect-ui, --send-only, --demo", file=sys.stderr)
+        return 2
+
+    try:
+        prompt_override, sent_message_source, message_path = load_message_override(args.message_file, args.message_text)
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if prompt_override is not None and not args.send_only:
+        print("Arbitrary message sending currently requires --send-only.", file=sys.stderr)
         return 2
 
     config = load_config(args.config.resolve())
@@ -715,10 +777,16 @@ def main() -> int:
             send_only=args.send_only and not args.demo,
             manual_confirm_send=args.manual_confirm_send,
             dry_run=args.dry_run,
+            prompt_override=prompt_override,
+            sent_message_source=sent_message_source,
+            message_path=message_path,
         )
 
     print(f"status={result.status}")
     print(f"log={result.log_path}")
+    print(f"sent_message_source={result.sent_message_source}")
+    if result.message_path:
+        print(f"message_path={result.message_path}")
     if result.reply_text:
         print("reply_detected=yes")
     return 0 if result.success else 1
