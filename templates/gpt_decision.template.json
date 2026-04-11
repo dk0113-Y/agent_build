@@ -51,5 +51,9 @@
     ],
     "expected_output_style": "Write a structured markdown report for GPT using the codex_report.md sections."
   },
+  "reference_targets": {
+    "best_known_reference": null,
+    "manual_compare_targets": []
+  },
   "controller_notes": "Replace placeholder compare targets and reasoning before a real round."
 }

@@ -7,6 +7,7 @@
 当前用途：
 
 - 说明 `gpt_decision.json` 中可用的控制面字段
+- 说明 `reference_targets` 和 `round_state.json` 如何支持跨轮对比
 - 说明这些字段应关联检查哪些 logs / plots
 - 约束 GPT / scheduler / Codex 之间的文件握手
 
@@ -74,12 +75,18 @@
 - 预计主要影响哪些指标 / 曲线
 - 本轮最关心的风险是什么
 
+如需跨轮对比，额外建议在 `gpt_decision.json` 中记录：
+
+- `reference_targets.best_known_reference`
+- `reference_targets.manual_compare_targets`
+
 ## 5. 风险控制规则
 
 - `decision_status != run_next_round` 时，scheduler 不应启动训练。
 - 不要把自然语言长文直接当成 machine-readable 决策协议，参数必须进入 `gpt_decision.json`。
 - 不要让 scheduler 直接调用 OpenAI API 或网页端 GPT。
-- 不要让 scheduler 在当前 phase 直接调用 `demo_codex_bridge.py`。
+- bridge 调用当前仅限把 `codex_request.md` 单向发送给本地 Codex，不包含报告自动读回。
+- `previous_round_run` 必须通过 `round_state.json` 解析为真实 run，不能把裸占位符直接交给 Codex。
 - 参数变更理由必须落到 `parameter_changes`，不要只写在聊天上下文里。
 
 ## 6. 明确待补充项（TODO）

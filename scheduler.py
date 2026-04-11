@@ -7,8 +7,8 @@ It supports two launch modes:
 1. Direct CLI arguments for fake_train.py
 2. A machine-readable decision file that drives the same launch path
 
-This script still does not invoke the Codex bridge. It only prepares the
-protocol-layer files that a later bridge can consume.
+When requested, it can also hand the generated codex_request.md to the local
+Codex bridge for one-way delivery into the desktop app.
 """
 
 from __future__ import annotations
@@ -24,9 +24,12 @@ from automation_protocol import (
     ProtocolError,
     RunArgs,
     decision_to_fake_train_cli_args,
+    ensure_round_state_file,
     load_decision_file,
     render_codex_request,
+    resolve_compare_targets,
     repo_root,
+    update_round_state_file,
 )
 
 
@@ -69,6 +72,35 @@ class BridgeInvocationResult:
     return_code: int | str | None
     log_path: str = ""
     error: str = ""
+
+
+def sync_round_state(
+    context: SchedulerContext,
+    *,
+    status: str,
+    run_dir: Path | None = None,
+    training_return_code: int | None = None,
+    bridge_result: BridgeInvocationResult | None = None,
+) -> Path | None:
+    if context.round_dir is None or context.decision is None:
+        return None
+    state_path = ensure_round_state_file(
+        round_dir=context.round_dir,
+        round_id=context.decision.round_id,
+        decision_file=context.round_dir / "gpt_decision.json",
+        codex_request_path=context.round_dir / "codex_request.md",
+        codex_report_path=context.round_dir / "codex_report.md",
+    )
+    update_kwargs: dict[str, object] = {
+        "status": status,
+        "run_dir": run_dir if run_dir is not None else "",
+        "training_return_code": training_return_code,
+    }
+    if bridge_result is not None:
+        update_kwargs["bridge_invoked"] = bridge_result.invoked
+        update_kwargs["bridge_status"] = bridge_result.status
+    update_round_state_file(state_path, **update_kwargs)
+    return state_path
 
 
 def parse_args() -> argparse.Namespace:
@@ -379,8 +411,26 @@ def main() -> int:
 
     bridge_result = BridgeInvocationResult(False, "not_invoked", None)
     codex_request_path = None if context.round_dir is None else context.round_dir / "codex_request.md"
+    round_state_file = None
+    if context.round_dir is not None and context.decision is not None:
+        round_state_file = sync_round_state(
+            context,
+            status="prepared",
+            run_dir=None,
+            training_return_code=None,
+            bridge_result=BridgeInvocationResult(False, "not_invoked", None),
+        )
     if not context.should_launch:
         bridge_result = BridgeInvocationResult(False, f"skipped_{context.exit_status}", "not_started")
+        if round_state_file is not None:
+            update_round_state_file(
+                round_state_file,
+                status=context.exit_status,
+                run_dir="",
+                training_return_code=None,
+                bridge_invoked=bridge_result.invoked,
+                bridge_status=bridge_result.status,
+            )
         emit_terminal_summary(
             status=context.exit_status,
             round_dir=context.round_dir,
@@ -397,6 +447,13 @@ def main() -> int:
 
     print("status=launching", flush=True)
     print(f"round_dir={'' if context.round_dir is None else context.round_dir}", flush=True)
+    sync_round_state(
+        context,
+        status="launching",
+        run_dir=None,
+        training_return_code=None,
+        bridge_result=BridgeInvocationResult(False, "not_invoked", None),
+    )
     process = launch_training_process(context)
 
     print("status=waiting_for_run_dir", flush=True)
@@ -410,6 +467,15 @@ def main() -> int:
     if run_dir is None:
         return_code = wait_for_process_exit(process, args.poll_sec)
         bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
+        if round_state_file is not None:
+            update_round_state_file(
+                round_state_file,
+                status="failed",
+                run_dir="",
+                training_return_code=return_code,
+                bridge_invoked=bridge_result.invoked,
+                bridge_status=bridge_result.status,
+            )
         emit_terminal_summary(
             status="failed",
             round_dir=context.round_dir,
@@ -423,6 +489,13 @@ def main() -> int:
 
     print("status=run_dir_detected", flush=True)
     print(f"run_dir={run_dir}", flush=True)
+    sync_round_state(
+        context,
+        status="run_dir_detected",
+        run_dir=run_dir,
+        training_return_code=None,
+        bridge_result=BridgeInvocationResult(False, "not_invoked", None),
+    )
 
     print("status=waiting_for_process_exit", flush=True)
     return_code = wait_for_process_exit(process, args.poll_sec)
@@ -430,12 +503,25 @@ def main() -> int:
     print("status=validating_artifacts", flush=True)
     validation = validate_run_artifacts(run_dir)
     success = return_code == 0 and validation.success
+    sync_round_state(
+        context,
+        status="success" if success else "failed",
+        run_dir=run_dir,
+        training_return_code=return_code,
+        bridge_result=BridgeInvocationResult(False, "not_invoked", None),
+    )
 
     generated_request_path = None
     if success and context.decision is not None and context.round_dir is not None:
         generated_request_path = context.round_dir / "codex_request.md"
+        resolved_compare_targets = resolve_compare_targets(context.decision, context.decision.round_id)
         generated_request_path.write_text(
-            render_codex_request(context.decision, run_dir=run_dir, round_dir=context.round_dir),
+            render_codex_request(
+                context.decision,
+                run_dir=run_dir,
+                round_dir=context.round_dir,
+                resolved_compare_targets=resolved_compare_targets,
+            ),
             encoding="utf-8",
         )
         if args.invoke_codex_bridge:
@@ -450,6 +536,16 @@ def main() -> int:
         bridge_result = BridgeInvocationResult(False, "skipped_no_codex_request", "not_started")
     else:
         bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
+
+    if round_state_file is not None:
+        update_round_state_file(
+            round_state_file,
+            status="success" if success else "failed",
+            run_dir=run_dir,
+            training_return_code=return_code,
+            bridge_invoked=bridge_result.invoked,
+            bridge_status=bridge_result.status,
+        )
 
     emit_terminal_summary(
         status="success" if success else "failed",

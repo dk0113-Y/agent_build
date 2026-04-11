@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ SCHEMA_VERSION = "1.0"
 SUPPORTED_TARGET_PROGRAM = "fake_train.py"
 ALLOWED_DECISION_STATUS = {"run_next_round", "hold", "stop"}
 ROUND_ID_PATTERN = re.compile(r"^round_(\d{4})$")
+ROUND_STATE_FILENAME = "round_state.json"
+SUCCESSFUL_ROUND_STATUSES = {"success"}
 
 
 class ProtocolError(ValueError):
@@ -54,6 +57,12 @@ class CodexAnalysisFocus:
 
 
 @dataclass
+class ReferenceTargets:
+    best_known_reference: str | None
+    manual_compare_targets: list[str]
+
+
+@dataclass
 class GPTDecision:
     schema_version: str
     round_id: str
@@ -62,7 +71,31 @@ class GPTDecision:
     run_args: RunArgs
     parameter_changes: list[ParameterChange]
     codex_analysis_focus: CodexAnalysisFocus
+    reference_targets: ReferenceTargets
     controller_notes: str
+
+
+@dataclass
+class RoundState:
+    schema_version: str
+    round_id: str
+    status: str
+    decision_file: str
+    codex_request_path: str
+    codex_report_path: str
+    run_dir: str
+    training_return_code: int | None
+    bridge_invoked: bool
+    bridge_status: str
+    created_at: str
+    updated_at: str
+
+
+@dataclass
+class ResolvedCompareTarget:
+    label: str
+    value: str
+    resolved: bool
 
 
 def repo_root() -> Path:
@@ -132,6 +165,21 @@ def build_decision_template(round_id: str) -> dict[str, Any]:
     return payload
 
 
+def now_iso() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def round_id_index(round_id: str) -> int:
+    match = ROUND_ID_PATTERN.fullmatch(normalize_round_id(round_id))
+    if match is None:
+        raise ProtocolError(f"Invalid round_id '{round_id}'.")
+    return int(match.group(1))
+
+
+def round_state_path(round_dir: Path) -> Path:
+    return round_dir / ROUND_STATE_FILENAME
+
+
 def _require_mapping(parent: dict[str, Any], field_name: str) -> dict[str, Any]:
     value = parent.get(field_name)
     if not isinstance(value, dict):
@@ -151,6 +199,16 @@ def _require_string(parent: dict[str, Any], field_name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ProtocolError(f"Missing or invalid string field '{field_name}'.")
     return value.strip()
+
+
+def _optional_string(parent: dict[str, Any], field_name: str) -> str | None:
+    value = parent.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ProtocolError(f"Field '{field_name}' must be a string or null.")
+    text = value.strip()
+    return text or None
 
 
 def _require_float(parent: dict[str, Any], field_name: str) -> float:
@@ -229,6 +287,20 @@ def load_decision_file(path: Path) -> GPTDecision:
         expected_output_style=_require_string(focus_raw, "expected_output_style"),
     )
 
+    reference_targets_raw = payload.get("reference_targets")
+    if reference_targets_raw is None:
+        reference_targets = ReferenceTargets(best_known_reference=None, manual_compare_targets=[])
+    else:
+        if not isinstance(reference_targets_raw, dict):
+            raise ProtocolError("Field 'reference_targets' must be an object when provided.")
+        manual_compare_targets = reference_targets_raw.get("manual_compare_targets", [])
+        if not isinstance(manual_compare_targets, list):
+            raise ProtocolError("Field 'reference_targets.manual_compare_targets' must be a list.")
+        reference_targets = ReferenceTargets(
+            best_known_reference=_optional_string(reference_targets_raw, "best_known_reference"),
+            manual_compare_targets=[str(item).strip() for item in manual_compare_targets if str(item).strip()],
+        )
+
     controller_notes = _require_string(payload, "controller_notes")
 
     return GPTDecision(
@@ -239,6 +311,7 @@ def load_decision_file(path: Path) -> GPTDecision:
         run_args=run_args,
         parameter_changes=parameter_changes,
         codex_analysis_focus=focus,
+        reference_targets=reference_targets,
         controller_notes=controller_notes,
     )
 
@@ -289,10 +362,249 @@ def relative_repo_path(path: Path) -> str:
         return str(path.resolve())
 
 
-def render_codex_request(decision: GPTDecision, run_dir: Path, round_dir: Path) -> str:
+def build_round_state(
+    *,
+    round_id: str,
+    decision_file: Path,
+    codex_request_path: Path,
+    codex_report_path: Path,
+) -> RoundState:
+    timestamp = now_iso()
+    return RoundState(
+        schema_version=SCHEMA_VERSION,
+        round_id=normalize_round_id(round_id),
+        status="prepared",
+        decision_file=relative_repo_path(decision_file),
+        codex_request_path=relative_repo_path(codex_request_path),
+        codex_report_path=relative_repo_path(codex_report_path),
+        run_dir="",
+        training_return_code=None,
+        bridge_invoked=False,
+        bridge_status="not_invoked",
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+
+def round_state_to_dict(state: RoundState) -> dict[str, Any]:
+    return {
+        "schema_version": state.schema_version,
+        "round_id": state.round_id,
+        "status": state.status,
+        "decision_file": state.decision_file,
+        "codex_request_path": state.codex_request_path,
+        "codex_report_path": state.codex_report_path,
+        "run_dir": state.run_dir,
+        "training_return_code": state.training_return_code,
+        "bridge_invoked": state.bridge_invoked,
+        "bridge_status": state.bridge_status,
+        "created_at": state.created_at,
+        "updated_at": state.updated_at,
+    }
+
+
+def write_round_state_file(path: Path, state: RoundState) -> None:
+    write_json_file(path, round_state_to_dict(state))
+
+
+def load_round_state_file(path: Path) -> RoundState:
+    payload = read_json_file(path)
+    training_return_code = payload.get("training_return_code")
+    if training_return_code is not None and not isinstance(training_return_code, int):
+        raise ProtocolError(f"Field 'training_return_code' in {path} must be an integer or null.")
+    bridge_invoked = payload.get("bridge_invoked")
+    if not isinstance(bridge_invoked, bool):
+        raise ProtocolError(f"Field 'bridge_invoked' in {path} must be a boolean.")
+    return RoundState(
+        schema_version=_require_string(payload, "schema_version"),
+        round_id=normalize_round_id(_require_string(payload, "round_id")),
+        status=_require_string(payload, "status"),
+        decision_file=_require_string(payload, "decision_file"),
+        codex_request_path=_require_string(payload, "codex_request_path"),
+        codex_report_path=_require_string(payload, "codex_report_path"),
+        run_dir=str(payload.get("run_dir", "")).strip(),
+        training_return_code=training_return_code,
+        bridge_invoked=bridge_invoked,
+        bridge_status=_require_string(payload, "bridge_status"),
+        created_at=_require_string(payload, "created_at"),
+        updated_at=_require_string(payload, "updated_at"),
+    )
+
+
+def ensure_round_state_file(
+    *,
+    round_dir: Path,
+    round_id: str,
+    decision_file: Path,
+    codex_request_path: Path,
+    codex_report_path: Path,
+) -> Path:
+    path = round_state_path(round_dir)
+    if not path.exists():
+        write_round_state_file(
+            path,
+            build_round_state(
+                round_id=round_id,
+                decision_file=decision_file,
+                codex_request_path=codex_request_path,
+                codex_report_path=codex_report_path,
+            ),
+        )
+    return path
+
+
+def update_round_state_file(path: Path, **changes: Any) -> RoundState:
+    state = load_round_state_file(path)
+    for key, value in changes.items():
+        if not hasattr(state, key):
+            raise ProtocolError(f"Unknown round_state field '{key}'.")
+        if key in {"decision_file", "codex_request_path", "codex_report_path", "run_dir"}:
+            if value is None:
+                value = ""
+            elif isinstance(value, Path):
+                value = relative_repo_path(value)
+            else:
+                value = str(value).strip()
+        setattr(state, key, value)
+    state.updated_at = now_iso()
+    write_round_state_file(path, state)
+    return state
+
+
+def _safe_load_round_state(path: Path) -> RoundState | None:
+    try:
+        return load_round_state_file(path)
+    except ProtocolError:
+        return None
+
+
+def list_round_states(base_dir: Path | None = None) -> list[RoundState]:
+    root = rounds_root() if base_dir is None else base_dir
+    if not root.exists():
+        return []
+    collected: list[tuple[int, RoundState]] = []
+    for round_dir in root.iterdir():
+        if not round_dir.is_dir():
+            continue
+        try:
+            index = round_id_index(round_dir.name)
+        except ProtocolError:
+            continue
+        state = _safe_load_round_state(round_state_path(round_dir))
+        if state is not None:
+            collected.append((index, state))
+    collected.sort(key=lambda item: item[0])
+    return [state for _, state in collected]
+
+
+def _resolve_existing_path(text: str) -> str | None:
+    candidate = Path(text)
+    if not candidate.is_absolute():
+        candidate = repo_root() / candidate
+    if candidate.exists():
+        return relative_repo_path(candidate)
+    return None
+
+
+def find_previous_successful_round_state(current_round_id: str) -> RoundState | None:
+    current_index = round_id_index(current_round_id)
+    previous_candidates: list[tuple[int, RoundState]] = []
+    for state in list_round_states():
+        state_index = round_id_index(state.round_id)
+        if state_index >= current_index:
+            continue
+        if state.status not in SUCCESSFUL_ROUND_STATUSES:
+            continue
+        if not state.run_dir:
+            continue
+        previous_candidates.append((state_index, state))
+    if not previous_candidates:
+        return None
+    previous_candidates.sort(key=lambda item: item[0])
+    return previous_candidates[-1][1]
+
+
+def render_compare_target_line(target: ResolvedCompareTarget) -> str:
+    if target.resolved:
+        return f"- {target.label}: `{target.value}`"
+    return f"- {target.label}: {target.value}"
+
+
+def resolve_compare_targets(decision: GPTDecision, current_round_id: str) -> list[ResolvedCompareTarget]:
+    resolved_targets: list[ResolvedCompareTarget] = []
+    seen: set[tuple[str, str, bool]] = set()
+
+    def append_target(label: str, value: str, resolved: bool) -> None:
+        key = (label, value, resolved)
+        if key in seen:
+            return
+        seen.add(key)
+        resolved_targets.append(ResolvedCompareTarget(label=label, value=value, resolved=resolved))
+
+    for item in decision.codex_analysis_focus.compare_targets:
+        raw = str(item).strip()
+        if not raw:
+            continue
+        if raw == "previous_round_run":
+            previous_state = find_previous_successful_round_state(current_round_id)
+            if previous_state is None:
+                append_target(
+                    "Previous successful run",
+                    "UNRESOLVED (no earlier successful round_state.json with a run_dir)",
+                    False,
+                )
+                continue
+            normalized_run_dir = _resolve_existing_path(previous_state.run_dir)
+            if normalized_run_dir is None:
+                append_target(
+                    "Previous successful run",
+                    f"UNRESOLVED (recorded run_dir was not found: {previous_state.run_dir})",
+                    False,
+                )
+                continue
+            append_target("Previous successful run", normalized_run_dir, True)
+            continue
+
+        if raw == "best_known_reference":
+            configured_reference = decision.reference_targets.best_known_reference
+            if configured_reference is None:
+                append_target(
+                    "Best known reference",
+                    "UNRESOLVED (not provided in gpt_decision.json)",
+                    False,
+                )
+                continue
+            normalized_reference = _resolve_existing_path(configured_reference)
+            if normalized_reference is None:
+                append_target(
+                    "Best known reference",
+                    f"UNRESOLVED (configured path was not found: {configured_reference})",
+                    False,
+                )
+                continue
+            append_target("Best known reference", normalized_reference, True)
+            continue
+
+        normalized_path = _resolve_existing_path(raw)
+        append_target("Compare target", normalized_path or raw, True)
+
+    for manual_target in decision.reference_targets.manual_compare_targets:
+        normalized_path = _resolve_existing_path(manual_target)
+        append_target("Manual compare target", normalized_path or manual_target, True)
+
+    return resolved_targets
+
+
+def render_codex_request(
+    decision: GPTDecision,
+    run_dir: Path,
+    round_dir: Path,
+    resolved_compare_targets: list[ResolvedCompareTarget] | None = None,
+) -> str:
     logs = [f"- `{relative_repo_path(run_dir / rel_path)}`" for rel_path in decision.codex_analysis_focus.required_logs]
     plots = [f"- `{relative_repo_path(run_dir / rel_path)}`" for rel_path in decision.codex_analysis_focus.required_plots]
-    compares = [f"- {item}" for item in decision.codex_analysis_focus.compare_targets]
+    compare_targets = resolved_compare_targets or resolve_compare_targets(decision, decision.round_id)
+    compares = [render_compare_target_line(item) for item in compare_targets]
     questions = [f"{index}. {question}" for index, question in enumerate(decision.codex_analysis_focus.questions, start=1)]
 
     if decision.parameter_changes:

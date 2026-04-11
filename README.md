@@ -40,7 +40,7 @@ pip install -r requirements.txt
 - `automation_protocol.py`
   协议层 helper。定义 decision schema、round 编号、模板读取、decision 校验、`codex_request.md` 渲染等辅助函数。
 - `prepare_round.py`
-  round 初始化工具。创建 `automation_rounds/round_0001/` 这种目录，并放入 `gpt_decision.json`、`codex_request.md`、`codex_report.md`。
+  round 初始化工具。创建 `automation_rounds/round_0001/` 这种目录，并放入 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`round_state.json`。
 - `templates/gpt_decision.template.json`
   `gpt_decision.json` 模板。
 - `templates/codex_report.template.md`
@@ -175,8 +175,8 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 ### 当前边界
 
 1. `scheduler.py` 当前只检测它自己启动的训练子进程，不负责接管任意外部训练任务。
-2. `scheduler.py` 当前不会自动唤醒 Codex，也不会调用 `demo_codex_bridge.py`。
-3. 当前 phase 只验证“训练输出形态”和“完成检测逻辑”，不是完整自动决策系统。
+2. `scheduler.py` 当前可以选择性调用 `demo_codex_bridge.py` 把 `codex_request.md` 单向发给本地 Codex，但不会自动读回报告。
+3. 当前 phase 只验证“训练输出形态”“完成检测逻辑”“request 单向发送”，不是完整自动决策系统。
 
 ## 第三层：协议层 / round 层
 
@@ -187,15 +187,20 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 当前只实现到：
 
 - `prepare_round.py` 创建 round 目录和模板文件
+- 每个 round 目录会有一份 `round_state.json` 记录真实 lineage / run 状态
 - `scheduler.py --decision-file ...` 读取 `gpt_decision.json`
 - 训练成功后由 scheduler 自动生成 `codex_request.md`
+- `previous_round_run` 会自动解析为上一轮成功 run 的真实路径
+- `best_known_reference` 可由 `gpt_decision.json.reference_targets.best_known_reference` 显式提供
 - round 目录中预置 `codex_report.md` 模板
+- 可选地由 scheduler 自动调用 bridge，把 request 单向发送到本地 Codex
 
 当前还没有：
 
 - 网页端 GPT bridge
 - OpenAI API
 - Codex 自动写回 `codex_report.md`
+- GPT 决策自动回流
 
 ### round 目录结构
 
@@ -206,6 +211,7 @@ automation_rounds/round_0001/
   gpt_decision.json
   codex_request.md
   codex_report.md
+  round_state.json
 ```
 
 ### 运行方式
@@ -251,6 +257,7 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 - `run_args`
 - `parameter_changes`
 - `codex_analysis_focus`
+- `reference_targets`
 - `controller_notes`
 
 其中：
@@ -259,6 +266,23 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 - `target_program` 当前实际支持的是 `fake_train.py`
 - `run_args` 当前映射到 `fake_train.py` 的参数
 - `codex_analysis_focus` 用于后续生成结构化 `codex_request.md`
+- `reference_targets.best_known_reference` 可显式指定基线 / 参考 run
+- `reference_targets.manual_compare_targets` 可追加其它比较对象
+
+### `round_state.json` 的作用
+
+现在每个 round 目录都会有一份 `round_state.json`，它用于记录：
+
+- 当前 round 的状态
+- 对应的真实 `run_dir`
+- 训练返回码
+- bridge 是否被调用以及调用结果
+
+系统会通过这些 state 文件建立最小 lineage：
+
+- `previous_round_run` 会自动解析为“当前 round 之前最近一个成功 round”的真实 `run_dir`
+- 如果找不到上一轮成功 run，`codex_request.md` 会写出明确的未解析说明
+- 如果 `best_known_reference` 没在 `gpt_decision.json` 中提供，`codex_request.md` 也会写出明确未解析说明，而不是保留裸占位符
 
 ### `codex_request.md` 的作用
 
@@ -266,6 +290,7 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 
 - 本轮 `gpt_decision.json`
 - 实际检测到的 `run_dir`
+- 已解析的 compare targets
 
 自动渲染 `codex_request.md`。这个文件是给后续 bridge / Codex 使用的固定握手面，不应该再重新发明协议。
 
