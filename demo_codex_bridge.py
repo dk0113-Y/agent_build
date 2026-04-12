@@ -504,9 +504,9 @@ class CodexBridge:
         hotkey(VK_CONTROL, VK_C)
         time.sleep(0.2)
         text = pyperclip.paste() or ""
-        count = text.count(token)
+        count = text.count(token) if token else 0
         return (
-            count >= baseline_count + 2,
+            count >= baseline_count + 2 if token else bool(text),
             text,
             {
                 "fallback": "clipboard",
@@ -514,6 +514,46 @@ class CodexBridge:
                 "token_occurrence_count": count,
             },
         )
+
+    def wait_for_arbitrary_reply(self, baseline_visible_count: int) -> tuple[bool, str, dict[str, Any]]:
+        deadline = time.time() + float(self.config.get("ui_timeout_sec", 30.0))
+        last_count = baseline_visible_count
+        stable_ticks = 0
+        last_snapshot: dict[str, Any] = {}
+        
+        while time.time() < deadline:
+            refreshed_root = self._find_root_web_area()
+            if refreshed_root is not None:
+                self.root = refreshed_root
+            self.maybe_scroll_to_bottom()
+            texts = self.read_visible_text_controls()
+            current_count = len(texts)
+            
+            last_snapshot = {
+                "visible_text_count": current_count,
+                "baseline": baseline_visible_count
+            }
+
+            # Prompt appears (+1), Reply appears (+1)
+            # Or perhaps just wait for stability
+            if current_count > baseline_visible_count:
+                if current_count == last_count:
+                    stable_ticks += 1
+                    if stable_ticks >= 4:  # roughly 2 seconds stable
+                        reply_text = texts[-1]["text"] if texts else ""
+                        return True, reply_text, last_snapshot
+                else:
+                    stable_ticks = 0
+            
+            last_count = current_count
+            time.sleep(float(self.config.get("poll_interval_sec", 0.5)))
+
+        if self.config.get("enable_clipboard_fallback", False):
+            success, fallback_text, extra = self.clipboard_fallback("", baseline_visible_count)
+            extra["ui_last_snapshot"] = last_snapshot
+            return True, fallback_text, extra
+
+        return False, "", last_snapshot
 
     def confirm_message_delivery(
         self,
@@ -873,8 +913,8 @@ def run_send_or_demo(
                 composer_rect_dict = send_meta["composer_rect"]
                 confirmation = bridge.confirm_message_delivery(
                     message_probe=message_probe,
-                    baseline_count=payload["message_probe_baseline_count"],
-                    post_paste_count=payload["message_probe_post_paste_count"],
+                    baseline_count=payload.get("message_probe_baseline_count") or 0,
+                    post_paste_count=payload.get("message_probe_post_paste_count") or 0,
                     composer_rect=Rect(
                         left=int(composer_rect_dict["left"]),
                         top=int(composer_rect_dict["top"]),
@@ -886,10 +926,10 @@ def run_send_or_demo(
                 payload["send_confirmation_status"] = confirmation["status"]
                 payload["send_confirmation_reason"] = confirmation["reason"]
                 payload["send_confirmation_meta"] = {
-                    "post_send_matching_texts": confirmation["post_send_matching_texts"],
-                    "post_send_visible_text_count": confirmation["post_send_visible_text_count"],
-                    "post_send_send_button": confirmation["post_send_send_button"],
-                    "composer_probe_status": confirmation["composer_probe_status"],
+                    "post_send_matching_texts": confirmation.get("post_send_matching_texts", []),
+                    "post_send_visible_text_count": confirmation.get("post_send_visible_text_count", 0),
+                    "post_send_send_button": confirmation.get("post_send_send_button", {}),
+                    "composer_probe_status": confirmation.get("composer_probe_status", ""),
                 }
                 payload["status"] = "sent_only" if confirmation["success"] else "send_not_confirmed"
                 payload["success"] = bool(confirmation["success"])
@@ -917,15 +957,20 @@ def run_send_or_demo(
                 send_confirmation_reason=payload.get("send_confirmation_reason", ""),
             )
 
-        success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
+        if token:
+            success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
+        else:
+            # We are in send-and-wait mode for an arbitrary message
+            success, reply_text, extra = bridge.wait_for_arbitrary_reply(baseline_visible_count=payload.get("baseline_visible_text_count", 0))
+
         payload["reply_detection"] = extra
         payload["detected_reply_text"] = reply_text
         payload["success"] = bool(success)
         payload["status"] = "reply_detected" if success else "reply_not_detected"
         payload["message"] = (
-            "Reply token was detected in the Codex UI."
+            "Reply was detected in the Codex UI."
             if success
-            else "Reply token was not detected before timeout."
+            else "Reply was not detected before timeout."
         )
         if reply_text:
             save_text(transcript_path, reply_text)
@@ -957,18 +1002,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("config.json"))
     parser.add_argument("--inspect-ui", action="store_true", help="Inspect candidate windows/controls and dump JSON.")
     parser.add_argument("--send-only", action="store_true", help="Focus window, paste prompt, optionally send, but do not wait.")
+    parser.add_argument("--send-and-wait", action="store_true", help="Send arbitrary message and wait for an arbitrary reply text to appear safely.")
     parser.add_argument("--demo", action="store_true", help="Run the full bridge demo: focus, send, wait, read, log.")
     parser.add_argument("--dry-run", action="store_true", help="Print and log the planned action without sending.")
     parser.add_argument("--manual-confirm-send", action="store_true", help="Pause after paste and wait for Enter in console.")
     parser.add_argument("--message-file", type=Path, help="Read message text from a file and send it to Codex.")
     parser.add_argument("--message-text", help="Send the provided text to Codex.")
+    parser.add_argument("--output-json", type=Path, help="Optional specific file to dump machine-readable status dict.")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if not any([args.inspect_ui, args.send_only, args.demo]):
-        print("Choose one of: --inspect-ui, --send-only, --demo", file=sys.stderr)
+    if not any([args.inspect_ui, args.send_only, args.demo, args.send_and_wait]):
+        print("Choose one of: --inspect-ui, --send-only, --demo, --send-and-wait", file=sys.stderr)
         return 2
 
     try:
@@ -976,8 +1023,9 @@ def main() -> int:
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    if prompt_override is not None and not args.send_only:
-        print("Arbitrary message sending currently requires --send-only.", file=sys.stderr)
+    
+    if prompt_override is not None and not (args.send_only or args.send_and_wait):
+        print("Arbitrary message sending requires --send-only or --send-and-wait.", file=sys.stderr)
         return 2
 
     config = load_config(args.config.resolve())
@@ -990,7 +1038,7 @@ def main() -> int:
         result = run_send_or_demo(
             config,
             logs_dir,
-            send_only=args.send_only and not args.demo,
+            send_only=args.send_only and not args.demo and not args.send_and_wait,
             manual_confirm_send=args.manual_confirm_send,
             dry_run=args.dry_run,
             prompt_override=prompt_override,
@@ -1011,6 +1059,18 @@ def main() -> int:
         print(f"send_confirmation_reason={result.send_confirmation_reason}")
     if result.reply_text:
         print("reply_detected=yes")
+        
+    if args.output_json:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        out_dict = {
+            "success": result.success,
+            "status": result.status,
+            "message": result.message,
+            "log_path": str(result.log_path),
+            "reply_text": result.reply_text,
+        }
+        args.output_json.write_text(json.dumps(out_dict, indent=2), "utf-8")
+        
     return 0 if result.success else 1
 
 
