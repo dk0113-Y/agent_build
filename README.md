@@ -116,7 +116,7 @@ python demo_codex_bridge.py --demo --dry-run
 2. 发送按钮通常只能通过“与 `添加文件等` 同一行的最右侧按钮”推断。
 3. 回复读取优先走 `RootWebArea` 下的 `TextControl`，失败后才回退到剪贴板复制。
 4. `status=sent_only` 现在表示“消息已发送并通过最小送达确认”；如果只是粘贴成功但未确认送达，会返回 `send_not_confirmed`。
-5. 当前仍然没有实现自动读回 Codex 分析结果，bridge demo 仍是本地 GUI 自动化验证，不是稳定闭环。
+5. 当前仍然没有实现自动读回 Codex 分析结果归档，bridge demo 仍是本地 GUI 自动化验证。建议使用 Exchange Mode 实现高可靠协作。
 
 ## 第二层：假训练 + 最小调度器 demo
 
@@ -210,13 +210,11 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 - `prepare_gpt_input.py` 可在 `codex_report.md` 有真实内容后生成 `gpt_input.md`
 - 可选地由 scheduler 自动调用 bridge，把 request 单向发送到本地 Codex
 
-当前还没有：
+当前未实现的完全闭环部分：
 
-- 网页端 GPT bridge
-- OpenAI API
-- Codex 自动写回 `codex_report.md`
-- GPT 输出自动回写为下一轮 `gpt_decision.json`
-- GPT 决策自动回流
+- OpenAI API (当前保持高效的网页端交互)
+- Codex 自动写回 `codex_report.md` (仍需人工或单项触发)
+- 完全无人值守的全自动闭环 (当前通过 Exchange Mode 实现可验证的触发式自动化)
 
 ### round 目录结构
 
@@ -430,7 +428,7 @@ python ingest_gpt_decision.py --input-file tmp/next_decision.json --source-round
 
 整理成一份稳定 Markdown 文件，便于后续人工或自动发送给 GPT。
 
-`prepare_gpt_input.py` 会拒绝使用空模板状态的 `codex_report.md` 来生成 `gpt_input.md`。当前仓库仍然没有实现网页端 GPT 自动发送，也没有实现 GPT 输出自动回写为下一轮 decision。
+`prepare_gpt_input.py` 会拒绝使用空模板状态的 `codex_report.md` 来生成 `gpt_input.md`。网页端 GPT 自动发送目前推荐使用 `exchange_web_bridge.py`，它已实现了自动发送、解析与决策回填的基础能力。
 
 ### `tuning_policy.md` 的作用
 

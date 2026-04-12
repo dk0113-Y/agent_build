@@ -34,8 +34,9 @@ def parse_args():
     parser.add_argument("--headless", type=str, default="false", help="Run browser in headless mode (true/false).")
     parser.add_argument("--manual-confirm-send", action="store_true", help="Wait for Enter before sending message.")
     parser.add_argument("--timeout-sec", type=int, default=120, help="Wait timeout for response.")
-    parser.add_argument("--save-raw-reply", action="store_true", default=True, help="Save raw MD response to tmp/.")
-    parser.add_argument("--save-json", action="store_true", default=True, help="Extract and save JSON to tmp/.")
+    parser.add_argument("--no-save-raw-reply", action="store_false", dest="save_raw_reply", help="Do not save raw MD response to tmp/.")
+    parser.add_argument("--no-save-json", action="store_false", dest="save_json", help="Do not extract or save JSON to tmp/.")
+    parser.set_defaults(save_raw_reply=True, save_json=True)
     parser.add_argument("--extract-only", action="store_true", help="Only extract JSON from existing raw reply (skip browser).")
     parser.add_argument("--ingest-after-extract", action="store_true", help="Automatically call ingest script after extraction.")
     parser.add_argument("--url", default="https://chatgpt.com", help="ChatGPT URL.")
@@ -135,9 +136,10 @@ def run_bridge():
                 print("Error: Empty response extracted.", file=sys.stderr)
                 return 1
 
-            # Save raw reply since we just fetched it
-            raw_reply_path.write_text(raw_text, encoding="utf-8")
-            print(f"raw_reply_path={raw_reply_path}")
+            # Save raw reply if enabled
+            if args.save_raw_reply:
+                raw_reply_path.write_text(raw_text, encoding="utf-8")
+                print(f"raw_reply_path={raw_reply_path}")
 
     # 3. Save and Process JSON
     if args.save_json:
