@@ -9,7 +9,7 @@
 3. 协议层 / round 层
    通过 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`gpt_input.md`、`tuning_policy.md`、`prepare_round.py`、`prepare_gpt_input.py` 把控制平面协议和文件握手层搭起来。
 
-当前仓库仍然不是一个全自动闭环系统。它通过 **GitHub 交换仓库 (Exchange Mode)** 与网页端 GPT 进行高效率协同：
+当前仓库通过 **GitHub 交换仓库 (Exchange Mode)** 与网页端 GPT 进行高效率协同，实现了可验证的半自动路线：
 
 1. 本地生成真实的训练产物与分析报告。
 2. 将控制面协议文件同步至 GitHub 交换仓库。
@@ -116,7 +116,7 @@ python demo_codex_bridge.py --demo --dry-run
 2. 发送按钮通常只能通过“与 `添加文件等` 同一行的最右侧按钮”推断。
 3. 回复读取优先走 `RootWebArea` 下的 `TextControl`，失败后才回退到剪贴板复制。
 4. `status=sent_only` 现在表示“消息已发送并通过最小送达确认”；如果只是粘贴成功但未确认送达，会返回 `send_not_confirmed`。
-5. 当前仍然没有实现自动读回 Codex 分析结果归档，bridge demo 仍是本地 GUI 自动化验证。建议使用 Exchange Mode 实现高可靠协作。
+5. 当前 bridge demo 仍是本地 GUI 自动化验证。建议使用 **Exchange Mode** 及其配套 Bridge 实现高可靠协作。
 
 ## 第二层：假训练 + 最小调度器 demo
 
@@ -198,6 +198,12 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 
 `GPT -> gpt_decision.json -> scheduler 启动训练 -> 训练完成 -> scheduler 生成 codex_request.md -> 后续由 bridge 发给 Codex -> Codex 产出 codex_report.md -> 后续再交回 GPT`
 
+当前未实现的环节：
+
+- OpenAI API (当前保持高效的网页端交互)
+- Codex 自动写回 `codex_report.md` (仍需人工或单项触发)
+- 完全无人值守的全自动闭环 (当前采用 Exchange Mode 实现可验证的触发式自动化)
+
 当前只实现到：
 
 - `prepare_round.py` 创建 round 目录和模板文件
@@ -209,12 +215,6 @@ python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
 - round 目录中预置 `codex_report.md` 模板
 - `prepare_gpt_input.py` 可在 `codex_report.md` 有真实内容后生成 `gpt_input.md`
 - 可选地由 scheduler 自动调用 bridge，把 request 单向发送到本地 Codex
-
-当前未实现的完全闭环部分：
-
-- OpenAI API (当前保持高效的网页端交互)
-- Codex 自动写回 `codex_report.md` (仍需人工或单项触发)
-- 完全无人值守的全自动闭环 (当前通过 Exchange Mode 实现可验证的触发式自动化)
 
 ### round 目录结构
 
@@ -428,7 +428,7 @@ python ingest_gpt_decision.py --input-file tmp/next_decision.json --source-round
 
 整理成一份稳定 Markdown 文件，便于后续人工或自动发送给 GPT。
 
-`prepare_gpt_input.py` 会拒绝使用空模板状态的 `codex_report.md` 来生成 `gpt_input.md`。网页端 GPT 自动发送目前推荐使用 `exchange_web_bridge.py`，它已实现了自动发送、解析与决策回填的基础能力。
+`prepare_gpt_input.py` 会拒绝使用空模板状态的 `codex_report.md` 来生成 `gpt_input.md`。网页端 GPT 交互目前推荐使用 `exchange_web_bridge.py`，它已实现了从发送索引消息到解析回复的全链路闭合支撑。
 
 ### `tuning_policy.md` 的作用
 

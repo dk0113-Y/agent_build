@@ -34,9 +34,6 @@ def parse_args():
     parser.add_argument("--headless", type=str, default="false", help="Run browser in headless mode (true/false).")
     parser.add_argument("--manual-confirm-send", action="store_true", help="Wait for Enter before sending message.")
     parser.add_argument("--timeout-sec", type=int, default=120, help="Wait timeout for response.")
-    parser.add_argument("--no-save-raw-reply", action="store_false", dest="save_raw_reply", help="Do not save raw MD response to tmp/.")
-    parser.add_argument("--no-save-json", action="store_false", dest="save_json", help="Do not extract or save JSON to tmp/.")
-    parser.set_defaults(save_raw_reply=True, save_json=True)
     parser.add_argument("--extract-only", action="store_true", help="Only extract JSON from existing raw reply (skip browser).")
     parser.add_argument("--ingest-after-extract", action="store_true", help="Automatically call ingest script after extraction.")
     parser.add_argument("--url", default="https://chatgpt.com", help="ChatGPT URL.")
@@ -136,45 +133,43 @@ def run_bridge():
                 print("Error: Empty response extracted.", file=sys.stderr)
                 return 1
 
-            # Save raw reply if enabled
-            if args.save_raw_reply:
-                raw_reply_path.write_text(raw_text, encoding="utf-8")
-                print(f"raw_reply_path={raw_reply_path}")
+            # Save raw reply (standard behavior)
+            raw_reply_path.write_text(raw_text, encoding="utf-8")
+            print(f"raw_reply_path={raw_reply_path}")
 
-    # 3. Save and Process JSON
-    if args.save_json:
-        json_str = extract_json_block(raw_text)
-        if not json_str:
-            print("Error: Could not extract JSON from reply.", file=sys.stderr)
-            return 1
-        
-        try:
-            # Validate JSON syntax
-            payload = json.loads(json_str)
-            json_output_path = tmp_dir / f"next_real_decision_{round_id}.json"
-            from automation_protocol import write_json_file
-            write_json_file(json_output_path, payload)
-            print(f"json_output_path={json_output_path}")
-        except Exception as e:
-            print(f"Error during JSON processing: {e}", file=sys.stderr)
-            return 1
+    # 3. Save and Process JSON (standard behavior)
+    json_str = extract_json_block(raw_text)
+    if not json_str:
+        print("Error: Could not extract JSON from reply.", file=sys.stderr)
+        return 1
+    
+    try:
+        # Validate JSON syntax
+        payload = json.loads(json_str)
+        json_output_path = tmp_dir / f"next_real_decision_{round_id}.json"
+        from automation_protocol import write_json_file
+        write_json_file(json_output_path, payload)
+        print(f"json_output_path={json_output_path}")
+    except Exception as e:
+        print(f"Error during JSON processing: {e}", file=sys.stderr)
+        return 1
 
-        if args.ingest_after_extract:
-            print(f"Calling ingest_exchange_decision.py for {round_id}...")
-            import subprocess
-            cmd = [
-                sys.executable,
-                str(repo_root() / "ingest_exchange_decision.py"),
-                "--input-file", str(json_output_path),
-                "--source-round-id", source_id,
-                "--exchange-repo-dir", str(args.exchange_repo_dir)
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if res.returncode == 0:
-                print(res.stdout)
-            else:
-                print(f"Ingest failed: {res.stderr}", file=sys.stderr)
-                return 1
+    if args.ingest_after_extract:
+        print(f"Calling ingest_exchange_decision.py for {round_id}...")
+        import subprocess
+        cmd = [
+            sys.executable,
+            str(repo_root() / "ingest_exchange_decision.py"),
+            "--input-file", str(json_output_path),
+            "--source-round-id", source_id,
+            "--exchange-repo-dir", str(args.exchange_repo_dir)
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode == 0:
+            print(res.stdout)
+        else:
+            print(f"Ingest failed: {res.stderr}", file=sys.stderr)
+            return 1
 
     return 0
 
