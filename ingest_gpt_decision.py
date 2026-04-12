@@ -14,6 +14,7 @@ from automation_protocol import (
     GPT_INPUT_FILENAME,
     ProtocolError,
     ensure_round_state_file,
+    ingest_decision_payload,
     load_decision_file,
     next_round_id,
     normalize_round_id,

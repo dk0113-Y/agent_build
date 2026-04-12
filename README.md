@@ -273,14 +273,13 @@ python prepare_gpt_input.py --round-id round_0001
 
 这一层提供了与 ChatGPT 网页端交互的能力，用于获取 GPT 的决策回复并提取 JSON。
 
-当前支持的链路：
-1. 读取 `gpt_input.md`。
-2. 通过 Playwright 启动浏览器，将内容发送到 ChatGPT 网页。
-3. 等待并捕获 GPT 的回复，保存为 `gpt_decision_response.md`。
-4. 从回复中提取 `next_gpt_decision.json`。
-5. 使用 `ingest_gpt_decision.py` 将提取的 JSON 导入为下一轮。
+#### 推荐方案：`exchange_web_bridge.py` (Exchange Mode 专用)
+这是目前 **Exchange Mode 推荐的网页桥接入口**。它专门针对 GitHub 交换仓库设计，支持自动读取索引消息、自动抓回回复并一键导入决策。
 
-#### 运行方式
+#### 兼容方案：`chatgpt_web_bridge.py` (旧 File-Push 路径)
+这是 **旧版本的兼容路径**，不再推荐作为自动化的主线入口。它依然保留用于支持传统的、基于本地文件的推送模式。
+
+#### 运行示例 (兼容方案)
 
 1. 环境准备：
 ```bash
@@ -303,7 +302,7 @@ python extract_gpt_decision.py --round-id round_0013
 python ingest_gpt_decision.py --input-file automation_rounds/round_0013/next_gpt_decision.json --source-round-id round_0013
 ```
 
-#### 当前限制
+#### 限制说明
 - 此 bridge 不会自动登录。建议使用 `--profile-dir` 复用已登录的浏览器配置。
 - 判定回复完成采用务实策略（如停止生成按钮消失），若不稳定会直接报错。
 - 不会自动触发下一轮训练，仅完成文件层面的桥接。

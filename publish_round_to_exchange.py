@@ -89,6 +89,11 @@ def main() -> int:
 
         # 3. Export round files
         target_round_dir = exchange_dir / "rounds" / round_id
+        if target_round_dir.exists() and args.force:
+            print(f"Force overwrite enabled. Cleaning target round directory: {target_round_dir}")
+            import shutil
+            shutil.rmtree(target_round_dir)
+        
         target_round_dir.mkdir(parents=True, exist_ok=True)
 
         exported_files = []
@@ -145,6 +150,17 @@ def main() -> int:
         msg_path = outbox_dir / f"web_index_message_{round_id}.md"
         msg_path.write_text(msg_content, encoding="utf-8")
 
+        # Post-publish assertions
+        expected_paths = [
+            exchange_dir / "CURRENT_ROUND.json",
+            target_round_dir / "index_manifest.json",
+            target_round_dir / "round_summary.json",
+            msg_path
+        ]
+        for p in expected_paths:
+            if not p.exists():
+                raise ProtocolError(f"Assertion failed: Expected file {p.relative_to(exchange_dir)} was not successfully created.")
+
         print(f"Round {round_id} published locally to {exchange_dir}")
         print(f"Summary: {summary_path.relative_to(exchange_dir)}")
         print(f"Manifest: {manifest_path.relative_to(exchange_dir)}")
@@ -154,11 +170,18 @@ def main() -> int:
         if args.commit:
             print("Committing changes...")
             run_git_command(exchange_dir, ["add", "."])
-            run_git_command(exchange_dir, ["commit", "-m", f"Publish round {round_id}"])
             
-            if args.push:
-                print("Pushing to remote...")
-                run_git_command(exchange_dir, ["push", "origin", args.branch])
+            # Check for changes
+            status_res = run_git_command(exchange_dir, ["status", "--porcelain"])
+            if not status_res.stdout.strip():
+                print("status=no_changes")
+                print("Nothing to commit; working tree unchanged.")
+                return 0
+            else:
+                run_git_command(exchange_dir, ["commit", "-m", f"Publish round {round_id}"])
+                if args.push:
+                    print("Pushing to remote...")
+                    run_git_command(exchange_dir, ["push", "origin", args.branch])
 
         print("status=success")
         return 0
