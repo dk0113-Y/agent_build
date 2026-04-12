@@ -1,16 +1,10 @@
 # GPT Decision Output Contract
 
-To ensure the automation pipeline can ingest your decisions, please follow this response format.
+To ensure the automation pipeline can ingest your decisions cleanly, you **MUST** provide your output using the single standard format described below.
 
-## 1. Response Structure
+## 1. Required Output Format
 
-1. **Reasoning**: Provide a brief explanation of your analysis and the reasoning behind your decisions.
-2. **Marker**: The literal string `DECISION_JSON_BEGIN` on a new line.
-3. **JSON Block**: A single JSON code block containing the `gpt_decision.json` content.
-4. **Marker**: The literal string `DECISION_JSON_END` on a new line.
-
-Example:
-Reasoning: I am adjusting parameters to improve exploration based on the recent logs.
+Your entire response must be structured exactly as follows:
 
 DECISION_JSON_BEGIN
 ```json
@@ -29,32 +23,34 @@ DECISION_JSON_BEGIN
   },
   "parameter_changes": [
     {
-      "name": "revisit_penalty",
-      "old_value": 0.1,
-      "new_value": 0.12,
-      "delta": 0.02,
-      "reason": "Slight increase to encourage exploring new states."
+      "name": "parameter_name",
+      "old_value": 0.0,
+      "new_value": 0.0,
+      "delta": 0.0,
+      "reason": "Detailed explanation of why this change was made."
     }
   ],
   "codex_analysis_focus": {
     "compare_targets": ["previous_round_run", "best_known_reference"],
     "required_logs": ["logs/train_steps.csv", "logs/eval_metrics.csv"],
     "required_plots": ["plots/reward_curve.png", "plots/coverage_curve.png"],
-    "questions": ["Is the agent discovering significantly more unique tiles?"],
+    "questions": ["Specific question about the training results..."],
     "expected_output_style": "Write a structured markdown report for GPT using the codex_report.md sections."
   },
   "reference_targets": {
-    "best_known_reference": "outputs/baseline_run",
+    "best_known_reference": "path/to/baseline/run",
     "manual_compare_targets": []
   },
-  "controller_notes": "Experimenting with revisit penalty impact on exploration."
+  "controller_notes": "Summary of experimental intent."
 }
 ```
 DECISION_JSON_END
 
-## 2. JSON Schema Requirements
+## 2. Formatting Rules & Prohibitions
 
-1. **Schema Compliance**: All required fields must be present.
-2. **Round ID**: Use `"round_xxxx"` for the `round_id` field. The system will automatically resolve this to the correct next round ID.
-3. **Field Types**: Ensure numeric fields are numbers, and lists are arrays.
-4. **Decision Status**: Use `"run_next_round"` to continue, `"hold"` to pause, or `"stop"` to terminate.
+1. **One Single JSON**: The output must contain one and only one JSON block between the `DECISION_JSON_BEGIN` and `DECISION_JSON_END` markers.
+2. **Top-level Object**: The JSON itself must be a single top-level object (`{...}`).
+3. **No Outer Text**: Do NOT include any introductory prose, explanations, or conclusions outside the markers.
+4. **No Inner Text**: Do NOT include any comments (e.g. `// comment`), trailing commas, or explanatory text inside the JSON code block.
+5. **Clean Strings**: Ensure all text inside the JSON is clean and free of polling markers or citation references (e.g., avoid `:contentReference[...]`).
+6. **Round ID Mapping**: Using `"round_id": "round_xxxx"` is perfectly acceptable and expected, as the ingestion layer will replace it with the correct ID.
