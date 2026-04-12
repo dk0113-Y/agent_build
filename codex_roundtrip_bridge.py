@@ -9,6 +9,7 @@ def parse_args():
     parser.add_argument("--request", type=Path, required=True, help="Input codex_request.md")
     parser.add_argument("--report", type=Path, required=True, help="Output codex_report.md")
     parser.add_argument("--allow-synthetic-fallback", action="store_true", help="Use synthetic mock report if UI automation fails.", default=False)
+    parser.add_argument("--output-json", type=Path, help="Optional specific JSON path to output extraction results to.")
     return parser.parse_args()
 
 def generate_mock_report(request_path: Path) -> str:
@@ -34,7 +35,7 @@ def main():
     
     print("Executing demo_codex_bridge.py for UI automation in send-and-wait mode...")
     bridge_script = Path(__file__).parent / "demo_codex_bridge.py"
-    output_json = Path(__file__).parent / "tmp" / "codex_bridge_out.json"
+    output_json = args.output_json if args.output_json else Path(__file__).parent / "tmp" / "codex_bridge_out.json"
     
     try:
         res = subprocess.run([

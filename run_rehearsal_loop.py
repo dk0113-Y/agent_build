@@ -103,9 +103,13 @@ def main():
                 "distance": truth.get("current_distance", {}),
                 "target_reached": truth.get("target_reached"),
                 "used_real_codex": False,
+                "codex_bridge_output_json": "",
+                "codex_bridge_status": "",
+                "codex_bridge_reply_detected": False,
                 "triggered_synthetic_codex_fallback": False,
                 "used_real_gpt": False,
                 "triggered_synthetic_gpt_fallback": False,
+                "synthetic_gpt_fallback_strategy": "",
                 "publish_pushed": False,
             }
             summary["round_log"].append(run_log)
@@ -122,15 +126,26 @@ def main():
             req_file = round_dir / "codex_request.md"
             rep_file = round_dir / "codex_report.md"
             
-            codex_cmd = [sys.executable, "codex_roundtrip_bridge.py", "--request", str(req_file), "--report", str(rep_file)]
+            bridge_out_json = Path("tmp") / f"codex_bridge_out_{current_round_id}.json"
+            if bridge_out_json.exists():
+                bridge_out_json.unlink()
+            
+            codex_cmd = [sys.executable, "codex_roundtrip_bridge.py", "--request", str(req_file), "--report", str(rep_file), "--output-json", str(bridge_out_json)]
             if args.allow_synthetic_codex_fallback:
                 codex_cmd.append("--allow-synthetic-fallback")
                 
             res = subprocess.run(codex_cmd)
-            # Infer if we used the fallback via the exit code behavior (if it passed but real execution indicated fallback)
-            # Actually, codex_roundtrip_bridge returns 0 on fallback success, so:
-            bridge_out_json = Path("tmp") / "codex_bridge_out.json"
-            real_codex_worked = bridge_out_json.exists() and json.loads(bridge_out_json.read_text("utf-8")).get("success", False)
+            
+            run_log["codex_bridge_output_json"] = str(bridge_out_json)
+            real_codex_worked = False
+            
+            if bridge_out_json.exists():
+                b_data = json.loads(bridge_out_json.read_text("utf-8"))
+                run_log["codex_bridge_status"] = b_data.get("status", "")
+                has_reply = bool(b_data.get("reply_text", "").strip())
+                run_log["codex_bridge_reply_detected"] = has_reply
+                if b_data.get("success", False) and has_reply:
+                    real_codex_worked = True
             
             if res.returncode != 0:
                 summary["stop_reason"] = "codex_bridge_failed"
@@ -177,13 +192,14 @@ def main():
                     
                 print("Fallback enabled. Generating mock GPT decision...")
                 run_log["triggered_synthetic_gpt_fallback"] = True
+                run_log["synthetic_gpt_fallback_strategy"] = "neutral_local_perturbation"
                 prev_dec = json.loads(decision_file.read_text("utf-8"))
                 args_run = prev_dec.get("run_args", {})
                 
-                # Dynamic generic movements without targeting the specific internal "0.02" value
-                turn = max(0.00, round(args_run.get("turn_penalty", 0.04) - random.uniform(0.005, 0.015), 3))
-                rev = max(0.00, round(args_run.get("revisit_penalty", 0.12) - random.uniform(0.01, 0.03), 3))
-                entry = max(1, args_run.get("entry_k", 6) + random.randint(1, 2))
+                # Dynamic neutral local perturbation without pointing towards optimum
+                turn = max(0.00, round(args_run.get("turn_penalty", 0.04) + random.uniform(-0.01, 0.01), 3))
+                rev = max(0.00, round(args_run.get("revisit_penalty", 0.12) + random.uniform(-0.02, 0.02), 3))
+                entry = max(1, args_run.get("entry_k", 6) + random.choice([-1, 0, 1]))
                 
                 next_dec = {
                     "schema_version": "1.0",
