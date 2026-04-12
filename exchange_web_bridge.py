@@ -25,6 +25,44 @@ except ImportError:
     print("Error: playwright not installed. Run 'pip install playwright' and 'playwright install chromium'.")
     sys.exit(1)
 
+def wait_for_prompt(page, timeout_ms=30000):
+    """
+    Wait for ChatGPT prompt input using a sequence of possible selectors.
+    Returns (locator, selector_string) or (None, None).
+    """
+    selectors = [
+        '#prompt-textarea',
+        'textarea#prompt-textarea',
+        'div#prompt-textarea[contenteditable="true"]',
+        '[contenteditable="true"]#prompt-textarea'
+    ]
+    
+    start_time = time.time()
+    while (time.time() - start_time) * 1000 < timeout_ms:
+        for selector in selectors:
+            try:
+                if page.locator(selector).is_visible():
+                    print(f"Prompt selector matched: {selector}")
+                    return page.locator(selector), selector
+            except:
+                continue
+        time.sleep(0.5)
+    
+    # Failure logging
+    print(f"Error: Timeout waiting for prompt interface after {timeout_ms}ms.", file=sys.stderr)
+    print(f"Current URL: {page.url}", file=sys.stderr)
+    print(f"Page Title: {page.title()}", file=sys.stderr)
+    print("Selector scan results:", file=sys.stderr)
+    for selector in selectors:
+        try:
+            count = page.locator(selector).count()
+            visible = page.locator(selector).is_visible() if count > 0 else False
+            print(f"  - {selector}: count={count}, visible={visible}", file=sys.stderr)
+        except Exception as e:
+            print(f"  - {selector}: error checking ({e})", file=sys.stderr)
+    
+    return None, None
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Exchange-Mode ChatGPT Web Bridge")
     parser.add_argument("--exchange-repo-dir", required=True, type=Path, help="Path to exchange repo clone.")
@@ -84,20 +122,18 @@ def run_bridge():
             print(f"Navigating to {args.url}...")
             page.goto(args.url)
 
-            try:
-                page.wait_for_selector('textarea[id="prompt-textarea"]', timeout=30000)
-                print("Chat interface detected.")
-            except TimeoutError:
-                print("Timeout waiting for chat interface. Please ensure you are logged in.", file=sys.stderr)
+            prompt_locator, matched_selector = wait_for_prompt(page, timeout_ms=30000)
+            if not prompt_locator:
+                print("Error: Could not find prompt interface.", file=sys.stderr)
                 if not headless:
                     print("Waiting for manual login/interaction...")
-                    page.wait_for_selector('textarea[id="prompt-textarea"]', timeout=300000)
-                else:
+                    prompt_locator, matched_selector = wait_for_prompt(page, timeout_ms=300000)
+                
+                if not prompt_locator:
                     return 1
 
-            print("Filling message...")
-            textarea = page.locator('textarea[id="prompt-textarea"]')
-            textarea.fill(msg_content)
+            print(f"Filling message using {matched_selector}...")
+            prompt_locator.fill(msg_content)
 
             if args.manual_confirm_send:
                 input("Message filled. Press Enter in this console to send...")
