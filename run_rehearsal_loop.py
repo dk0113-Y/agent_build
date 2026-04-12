@@ -270,24 +270,24 @@ def main():
             run_log["gpt_decision_schema_valid"] = gpt_schema_valid
             run_log["gpt_output_gate_reason"] = gpt_gate_reason
             
+            # Unconditional GPT output gate — mirrors Codex gate; returncode is only informational
             if res.returncode != 0 and not gpt_gate_passed:
                 print("GPT Web bridge failed.")
                 if not args.allow_synthetic_gpt_fallback:
                     print("Strict Mode: Rehearsal halted due to missing GPT API response/Playwright failure.")
                     summary["stop_reason"] = "gpt_bridge_failed_strictly"
                     break
-                    
+
                 print("Fallback enabled. Generating mock GPT decision...")
                 run_log["triggered_synthetic_gpt_fallback"] = True
                 run_log["synthetic_gpt_fallback_strategy"] = "neutral_local_perturbation"
                 prev_dec = json.loads(decision_file.read_text("utf-8"))
                 args_run = prev_dec.get("run_args", {})
-                
-                # Dynamic neutral local perturbation without pointing towards optimum
+
                 turn = max(0.00, round(args_run.get("turn_penalty", 0.04) + random.uniform(-0.01, 0.01), 3))
                 rev = max(0.00, round(args_run.get("revisit_penalty", 0.12) + random.uniform(-0.02, 0.02), 3))
                 entry = max(1, args_run.get("entry_k", 6) + random.choice([-1, 0, 1]))
-                
+
                 next_dec = {
                     "schema_version": "1.0",
                     "round_id": "round_xxxx",
@@ -308,6 +308,12 @@ def main():
                 }
                 next_json_path.parent.mkdir(exist_ok=True)
                 next_json_path.write_text(json.dumps(next_dec, indent=2), "utf-8")
+
+            # Unconditional gate: even if bridge returned 0, artifact must satisfy gate
+            if not gpt_gate_passed:
+                summary["stop_reason"] = f"gpt_output_gate_failed: {gpt_gate_reason}"
+                print(f"GPT artifact gate not satisfied: {gpt_gate_reason}")
+                break
                 
                 print("=> Ingesting synthetic debug decision...")
             if gpt_gate_passed:
