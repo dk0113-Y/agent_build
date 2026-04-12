@@ -123,26 +123,46 @@ def build_metric_point(
     elapsed_sec: float,
 ) -> MetricPoint:
     progress = step / max(total_steps, 1)
-    reward_base = 28.0 + 92.0 * (1.0 - math.exp(-3.2 * progress))
-    reward_bias = -turn_penalty * 80.0 - revisit_penalty * 55.0 + entry_k * 1.6
+
+    # Synthetic Optimums
+    turn_penalty_opt = 0.02
+    revisit_penalty_opt = 0.08
+    entry_k_opt = 10
+
+    # Distance to optimum (L1 style with weights)
+    dist_turn = abs(turn_penalty - turn_penalty_opt)
+    dist_revisit = abs(revisit_penalty - revisit_penalty_opt)
+    dist_k = abs(entry_k - entry_k_opt)
+    
+    # Interaction term
+    interaction = dist_turn * dist_revisit * 100
+
+    # Combine into a single error score (0 when optimal)
+    error_score = (dist_turn * 150.0) + (dist_revisit * 60.0) + (dist_k * 1.5) + interaction
+
+    # As progress increases, the metrics approach their plateau
+    # Plateau is penalized by error_score
+    
+    reward_base = 28.0 + (92.0 - error_score * 3.0) * (1.0 - math.exp(-3.2 * progress))
     reward_wave = 6.5 * math.sin(step * 0.45) + 2.0 * math.sin(step * 0.12 + 0.5)
     reward_noise = rng.uniform(-3.0, 3.0)
-    reward = reward_base + reward_bias + reward_wave + reward_noise
+    reward = reward_base + reward_wave + reward_noise
 
-    coverage_base = 0.18 + 0.79 * (1.0 - math.exp(-3.6 * progress))
+    coverage_base = 0.18 + (0.79 - error_score * 0.01) * (1.0 - math.exp(-3.6 * progress))
     coverage_noise = rng.uniform(-0.02, 0.02)
-    coverage = clamp(coverage_base + coverage_noise - turn_penalty * 0.08, 0.0, 0.995)
+    coverage = clamp(coverage_base + coverage_noise, 0.0, 0.995)
 
-    success_base = 1.0 / (1.0 + math.exp(-8.0 * (progress - 0.55)))
+    success_base = (1.0 - error_score * 0.015) / (1.0 + math.exp(-8.0 * (progress - 0.55)))
     success_noise = rng.uniform(-0.03, 0.03)
-    success_rate = clamp(success_base + success_noise - revisit_penalty * 0.05, 0.0, 0.995)
+    success_rate = clamp(success_base + success_noise, 0.0, 0.995)
 
-    loss_base = 1.95 * math.exp(-4.1 * progress) + 0.12
+    loss_base = 1.95 * math.exp(-4.1 * progress) + 0.12 + (error_score * 0.05)
     loss_wave = 0.08 * math.cos(step * 0.55)
     loss_noise = rng.uniform(-0.03, 0.03)
-    loss = clamp(loss_base + loss_wave + loss_noise + turn_penalty * 0.2, 0.02, 3.0)
+    loss = clamp(loss_base + loss_wave + loss_noise, 0.02, 3.0)
 
-    episode_length = max(18, int(round(110 - progress * 52 + rng.uniform(-6, 6))))
+    episode_length_base = 110 - progress * 52 + (error_score * 5)
+    episode_length = max(18, int(round(episode_length_base + rng.uniform(-6, 6))))
 
     return MetricPoint(
         step=step,
@@ -343,6 +363,35 @@ def main() -> int:
     refresh_plots(plots_dir, history)
     write_checkpoint(checkpoints_dir / "last.pt", label="last", point=final_point)
     write_checkpoint(checkpoints_dir / "best.pt", label="best", point=best_point)
+
+    # Write oracle/synthetic truth summary
+    turn_penalty_opt = 0.02
+    revisit_penalty_opt = 0.08
+    entry_k_opt = 10
+    dist_turn = abs(args.turn_penalty - turn_penalty_opt)
+    dist_revisit = abs(args.revisit_penalty - revisit_penalty_opt)
+    dist_k = abs(args.entry_k - entry_k_opt)
+    error_score = (dist_turn * 150.0) + (dist_revisit * 60.0) + (dist_k * 1.5)
+    
+    # Target reached if close enough
+    target_reached = dist_turn <= 0.005 and dist_revisit <= 0.01 and dist_k <= 1
+
+    import json
+    oracle_data = {
+        "optimum": {
+            "turn_penalty": turn_penalty_opt,
+            "revisit_penalty": revisit_penalty_opt,
+            "entry_k": entry_k_opt
+        },
+        "current_distance": {
+            "turn_penalty": dist_turn,
+            "revisit_penalty": dist_revisit,
+            "entry_k": dist_k
+        },
+        "error_score": error_score,
+        "target_reached": target_reached
+    }
+    (run_dir / "synthetic_truth.json").write_text(json.dumps(oracle_data, indent=2), encoding="utf-8")
 
     print("status=completed", flush=True)
     print(f"run_dir={run_dir}", flush=True)
