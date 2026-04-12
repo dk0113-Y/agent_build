@@ -21,6 +21,7 @@ def parse_args():
     parser.add_argument("--no-strict", action="store_false", dest="strict", help="Disable strict error halting.")
     parser.add_argument("--allow-synthetic-codex-fallback", action="store_true", help="Allow codex analysis to mock if UI absent.")
     parser.add_argument("--allow-synthetic-gpt-fallback", action="store_true", help="Allow GPT json to mock if Web bridge absent.")
+    parser.add_argument("--gpt-profile-dir", type=Path, help="Persistent browser profile dir for real ChatGPT loop.")
     return parser.parse_args()
 
 def main():
@@ -65,10 +66,22 @@ def main():
     
     summary = {
         "rounds_run": 0,
+        "gpt_profile_dir": str(args.gpt_profile_dir.resolve()) if args.gpt_profile_dir else "",
+        "gpt_profile_mode": "persistent_profile" if args.gpt_profile_dir else "ephemeral_context",
         "round_log": [],
         "stop_reason": "",
         "success": False
     }
+
+    if args.strict and not args.gpt_profile_dir:
+        print("Error: strict mode requires --gpt-profile-dir for a persistent logged-in ChatGPT session.", file=sys.stderr)
+        summary["stop_reason"] = "missing_gpt_profile_in_strict_mode"
+        print("\n=== Rehearsal Summary ===")
+        print(json.dumps(summary, indent=2))
+        Path("rehearsal_summary.json").write_text(json.dumps(summary, indent=2), "utf-8")
+        sys.exit(1)
+    elif not args.gpt_profile_dir:
+        print("Warning: Running without --gpt-profile-dir. GPT bridge will use ephemeral context without login state.", file=sys.stderr)
 
     try:
         for i in range(args.max_rounds):
@@ -110,6 +123,8 @@ def main():
                 "used_real_gpt": False,
                 "triggered_synthetic_gpt_fallback": False,
                 "synthetic_gpt_fallback_strategy": "",
+                "gpt_profile_dir": summary["gpt_profile_dir"],
+                "gpt_profile_mode": summary["gpt_profile_mode"],
                 "publish_pushed": False,
             }
             summary["round_log"].append(run_log)
@@ -181,7 +196,11 @@ def main():
             next_json_path = Path("tmp") / f"next_real_decision_{current_round_id}.json"
             
             # Attempt real exchange bridge
-            res = subprocess.run([sys.executable, "exchange_web_bridge.py", "--round-id", current_round_id, "--exchange-repo-dir", str(args.exchange_repo), "--headless", "true"])
+            bridge_cmd = [sys.executable, "exchange_web_bridge.py", "--round-id", current_round_id, "--exchange-repo-dir", str(args.exchange_repo), "--headless", "true"]
+            if args.gpt_profile_dir:
+                bridge_cmd.extend(["--profile-dir", str(args.gpt_profile_dir)])
+                
+            res = subprocess.run(bridge_cmd)
             
             if res.returncode != 0 and not next_json_path.exists():
                 print("GPT Web bridge failed.")

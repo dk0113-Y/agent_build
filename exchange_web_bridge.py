@@ -112,13 +112,19 @@ def run_bridge():
             
         with sync_playwright() as p:
             if args.profile_dir:
-                profile_dir = str(args.profile_dir.resolve())
+                profile_dir_path = args.profile_dir.resolve()
+                profile_dir_path.mkdir(parents=True, exist_ok=True)
+                profile_dir_str = str(profile_dir_path)
+                print(f"using persistent profile: {profile_dir_str}")
+                profile_mode = "persistent_profile"
                 context = p.chromium.launch_persistent_context(
-                    profile_dir,
+                    profile_dir_str,
                     headless=headless,
                     args=["--disable-blink-features=AutomationControlled"]
                 )
             else:
+                print("Warning: no GPT profile dir specified; launching ephemeral browser context without login persistence.", file=sys.stderr)
+                profile_mode = "ephemeral_context"
                 browser = p.chromium.launch(headless=headless)
                 context = browser.new_context()
 
@@ -128,12 +134,23 @@ def run_bridge():
 
             prompt_locator, matched_selector = wait_for_prompt(page, timeout_ms=30000)
             if not prompt_locator:
-                print("Error: Could not find prompt interface.", file=sys.stderr)
+                error_msg = f"Error: Could not find prompt interface. URL: {page.url}. Suspected unlogged state/initial screen."
+                print(error_msg, file=sys.stderr)
                 if not headless:
                     print("Waiting for manual login/interaction...")
                     prompt_locator, matched_selector = wait_for_prompt(page, timeout_ms=300000)
                 
                 if not prompt_locator:
+                    # Write debug stub to avoid black-holing
+                    debug_info_early = {
+                        "round_id": round_id,
+                        "gpt_profile_mode": profile_mode,
+                        "extract_error": error_msg,
+                        "url_at_failure": page.url
+                    }
+                    debug_path = tmp_dir / f"{round_id}_gpt_bridge_debug.json"
+                    from automation_protocol import write_json_file
+                    write_json_file(debug_path, debug_info_early)
                     return 1
 
             print(f"Filling message using {matched_selector}...")
@@ -147,6 +164,7 @@ def run_bridge():
             
             debug_info = {
                "round_id": round_id,
+               "gpt_profile_mode": profile_mode,
                "index_message_path": str(msg_path),
                "initial_assistant_count": initial_assistant_count,
                "final_assistant_count": initial_assistant_count,
