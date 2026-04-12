@@ -162,11 +162,18 @@ def run_bridge():
 
             print("Extracting response...")
             assistant_messages = page.locator('div.agent-turn, div[data-message-author-role="assistant"]')
-            last_message = assistant_messages.last()
+            count = assistant_messages.count()
+            print(f"assistant_message_count={count}")
+
+            if count == 0:
+                print(f"Error: No assistant messages found (assistant_message_count=0). URL: {page.url}", file=sys.stderr)
+                return 1
+
+            last_message = assistant_messages.last
             raw_text = last_message.inner_text()
             
             if not raw_text.strip():
-                print("Error: Empty response extracted.", file=sys.stderr)
+                print(f"Error: Empty response extracted (assistant_message_count={count}). URL: {page.url}", file=sys.stderr)
                 return 1
 
             # Save raw reply (standard behavior)
