@@ -25,6 +25,16 @@ try:
 except ImportError:
     HAS_PLAYWRIGHT = False
 
+def is_placeholder(text: str) -> bool:
+    """Detect if the text is just an intermediate state/loading indicator."""
+    t = text.strip()
+    if not t:
+        return True
+    # Often placeholders are short sentences like 'Received app response', '正在思考', 'Analyzing...'
+    if len(t) < 40 and ("思考" in t or "App" in t or "Received" in t or "response" in t or "Thought" in t or "Search" in t or "Analyz" in t):
+        return True
+    return False
+
 def wait_for_prompt(page, timeout_ms=30000):
     """
     Wait for ChatGPT prompt input using a sequence of possible selectors.
@@ -171,6 +181,12 @@ def run_bridge():
                "stop_button_visible": False,
                "composer_editable": False,
                "last_text_length": 0,
+               "last_candidate_text": "",
+               "last_candidate_is_placeholder": True,
+               "placeholder_only_seen": True,
+               "assistant_count_increased": False,
+               "generation_still_active_at_timeout": False,
+               "completion_stage": "waiting_for_first_assistant_node",
                "marker_begin_found": False,
                "marker_end_found": False,
                "json_code_block_found": False,
@@ -190,9 +206,14 @@ def run_bridge():
             time.sleep(2) # Initial wait for generation to start
             
             latest_text = ""
+            best_candidate_text = ""
+            best_candidate_length = 0
             stable_ticks = 0
+            extra_grace_time_used = 0
+            MAX_GRACE_TIME = 30
+            completion_stage = "waiting_for_first_assistant_node"
             
-            while time.time() - start_time < args.timeout_sec:
+            while time.time() - start_time < args.timeout_sec + extra_grace_time_used:
                 current_count = assistant_messages.count()
                 debug_info["final_assistant_count"] = current_count
                 
@@ -207,17 +228,54 @@ def run_bridge():
                 debug_info["composer_editable"] = composer_editable
                 
                 if current_count > initial_assistant_count:
-                    try:
-                        latest_text = assistant_messages.nth(current_count - 1).inner_text(timeout=200)
-                    except:
-                        pass
-                elif current_count > 0:
-                    try:
-                        latest_text = assistant_messages.last.inner_text(timeout=200)
-                    except:
-                        pass
-                        
-                debug_info["last_text_length"] = len(latest_text)
+                    debug_info["assistant_count_increased"] = True
+                    current_candidates = []
+                    
+                    for k in range(initial_assistant_count, current_count):
+                        try:
+                            # Use inner_text without forcing timeout block
+                            t = assistant_messages.nth(k).inner_text(timeout=200).strip()
+                            current_candidates.append(t)
+                        except:
+                            pass
+                            
+                    if not current_candidates and current_count > 0:
+                        try:
+                            current_candidates.append(assistant_messages.last.inner_text(timeout=200).strip())
+                        except:
+                            pass
+                    
+                    current_best = ""
+                    current_best_is_placeholder = True
+                    for cand in current_candidates:
+                        cand_placeholder = is_placeholder(cand)
+                        if not cand_placeholder and current_best_is_placeholder:
+                            current_best = cand
+                            current_best_is_placeholder = False
+                        elif cand_placeholder == current_best_is_placeholder:
+                            if len(cand) > len(current_best):
+                                current_best = cand
+                                
+                    latest_text = current_best
+                    
+                    if not current_best_is_placeholder:
+                        debug_info["placeholder_only_seen"] = False
+                        if len(current_best) > best_candidate_length:
+                            best_candidate_text = current_best
+                            best_candidate_length = len(current_best)
+                    else:
+                        if debug_info["placeholder_only_seen"]:
+                            best_candidate_text = current_best
+                            best_candidate_length = len(current_best)
+                            
+                    debug_info["last_candidate_text"] = best_candidate_text
+                    debug_info["last_candidate_is_placeholder"] = current_best_is_placeholder
+                else:
+                    debug_info["last_candidate_text"] = ""
+                    debug_info["last_candidate_is_placeholder"] = True
+                    latest_text = ""
+
+                debug_info["last_text_length"] = best_candidate_length
                 has_begin = "DECISION_JSON_BEGIN" in latest_text
                 has_end = "DECISION_JSON_END" in latest_text
                 has_code = "```json" in latest_text
@@ -226,22 +284,40 @@ def run_bridge():
                 debug_info["marker_end_found"] = has_end
                 debug_info["json_code_block_found"] = has_code
                 
-                if has_begin and has_end and has_code:
-                    completed = True
-                    completed_reason = "markers_found_early_exit"
-                    break
-                    
-                if current_count > initial_assistant_count and not is_generating and composer_editable:
-                    stable_ticks += 1
-                    if stable_ticks >= 3:
+                # Check stages
+                if not debug_info["assistant_count_increased"]:
+                    completion_stage = "waiting_for_first_assistant_node"
+                elif debug_info["placeholder_only_seen"]:
+                    completion_stage = "waiting_for_substantive_content"
+                    if is_generating and extra_grace_time_used < MAX_GRACE_TIME:
+                        extra_grace_time_used += 1
+                else:
+                    completion_stage = "waiting_for_completion_after_substantive_content"
+                
+                # Try completion
+                if completion_stage not in ["waiting_for_first_assistant_node", "waiting_for_substantive_content"]:
+                    if has_begin and has_end and has_code:
                         completed = True
-                        completed_reason = "stable_ui_signals"
+                        completed_reason = "markers_found_early_exit"
+                        completion_stage = "ready_to_extract"
                         break
+                        
+                    if not is_generating:
+                        stable_ticks += 1
+                        if stable_ticks >= 3:
+                            completed = True
+                            completed_reason = "stable_ui_signals"
+                            completion_stage = "ready_to_extract"
+                            break
+                    else:
+                        stable_ticks = 0
                 else:
                     stable_ticks = 0
                 
                 time.sleep(1)
 
+            debug_info["completion_stage"] = completion_stage
+            debug_info["generation_still_active_at_timeout"] = is_generating
             debug_info["completed"] = completed
             debug_info["completed_reason"] = completed_reason
             
@@ -249,7 +325,7 @@ def run_bridge():
             from automation_protocol import write_json_file
             write_json_file(debug_path, debug_info)
 
-            raw_text = latest_text
+            raw_text = best_candidate_text
             if raw_text:
                 partial_path = tmp_dir / f"{round_id}_gpt_reply_last_visible.md"
                 partial_path.write_text(raw_text, encoding="utf-8")
