@@ -176,6 +176,11 @@ def build_web_index_message(exchange_url: str, round_id: str, branch: str = "mai
         f"2. Follow the manifest at `rounds/{round_id}/index_manifest.json` to access relevant reports and logs.\n"
         f"3. Note that these files are automation materials representing the current state of a DRL experiment.\n"
         f"4. Provide only a single JSON code block as your response, containing a valid `next_gpt_decision.json`.\n"
-        f"5. **Format Requirement**: Wrap the JSON block between `DECISION_JSON_BEGIN` and `DECISION_JSON_END`.\n\n"
-        f"Refer to `docs/output_contract.md` for the exact format requirements."
+        f"5. **Response Format REQUIRED**:\n"
+        f"   - Start with a brief Reasoning section.\n"
+        f"   - Then write the literal marker `DECISION_JSON_BEGIN` on its own line.\n"
+        f"   - Then provide the JSON block.\n"
+        f"   - Then write the literal marker `DECISION_JSON_END` on its own line.\n"
+        f"   - Inside the JSON, you can use `\"round_id\": \"round_xxxx\"`.\n\n"
+        f"Refer to `docs/output_contract.md` for the full format requirements."
     )

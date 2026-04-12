@@ -140,6 +140,17 @@ def next_round_id(base_dir: Path | None = None) -> str:
     return f"round_{max_index + 1:04d}"
 
 
+def is_round_xxxx(value: str) -> bool:
+    return str(value).strip().lower() == "round_xxxx"
+
+
+def normalize_round_id_lenient(value: str | int) -> str:
+    """Allows round_xxxx as a valid ID for template/extraction purposes."""
+    if is_round_xxxx(str(value)):
+        return "round_xxxx"
+    return normalize_round_id(value)
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -242,7 +253,7 @@ def _optional_numeric(change: dict[str, Any], field_name: str) -> int | float | 
 def load_decision_file(path: Path) -> GPTDecision:
     payload = read_json_file(path)
     schema_version = _require_string(payload, "schema_version")
-    round_id = normalize_round_id(_require_string(payload, "round_id"))
+    round_id = normalize_round_id_lenient(_require_string(payload, "round_id"))
     decision_status = _require_string(payload, "decision_status")
     if decision_status not in ALLOWED_DECISION_STATUS:
         raise ProtocolError(
@@ -836,3 +847,95 @@ def render_codex_request(
             "- 请只基于当前工作区真实文件，不要假设尚未实现的自动化能力。",
         ]
     )
+
+
+###############################################################################
+# Shared Ingestion Logic
+###############################################################################
+
+def ingest_decision_payload(
+    payload: dict[str, Any],
+    target_round_id: str | None = None,
+    source_round_id: str | None = None,
+    force: bool = False,
+) -> tuple[str, Path]:
+    """
+    Common ingestion logic for both local GPT bridge and Exchange mode.
+    Returns (actual_target_id, round_dir).
+    """
+    # 1. Determine target round ID
+    base_dir = rounds_root()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    actual_target_id = (
+        normalize_round_id(target_round_id)
+        if target_round_id
+        else next_round_id(base_dir)
+    )
+    round_dir = base_dir / actual_target_id
+
+    # 2. Handle existing directory
+    if round_dir.exists():
+        if force:
+            import shutil
+
+            shutil.rmtree(round_dir)
+        else:
+            raise ProtocolError(
+                f"Round directory already exists: {round_dir}. Use force=True to overwrite."
+            )
+
+    round_dir.mkdir(parents=True, exist_ok=False)
+
+    # 3. Path setup
+    decision_file = round_dir / "gpt_decision.json"
+    codex_request_path = round_dir / "codex_request.md"
+    codex_report_path = round_dir / "codex_report.md"
+    gpt_input_path = round_dir / GPT_INPUT_FILENAME
+    round_state_path = round_dir / ROUND_STATE_FILENAME
+
+    # 4. Normalize and write decision
+    # Replace placeholder round_id if present
+    if payload.get("round_id") == "round_xxxx" or not payload.get("round_id"):
+        payload["round_id"] = actual_target_id
+    else:
+        # We always enforce the determined target_round_id for consistency
+        payload["round_id"] = actual_target_id
+
+    write_json_file(decision_file, payload)
+
+    # Validate schema
+    try:
+        load_decision_file(decision_file)
+    except ProtocolError as exc:
+        # If invalid, cleanup and error out
+        import shutil
+
+        shutil.rmtree(round_dir)
+        raise ProtocolError(f"Input JSON failed schema validation: {exc}")
+
+    # 5. Initialize other protocol files
+    codex_request_path.write_text(
+        render_codex_request_placeholder(actual_target_id), encoding="utf-8"
+    )
+    codex_report_path.write_text(
+        render_codex_report_stub(actual_target_id), encoding="utf-8"
+    )
+    gpt_input_path.write_text(
+        render_gpt_input_placeholder(actual_target_id), encoding="utf-8"
+    )
+
+    # 6. Initialize Metadata (State)
+    ensure_round_state_file(
+        round_dir=round_dir,
+        round_id=actual_target_id,
+        decision_file=decision_file,
+        codex_request_path=codex_request_path,
+        codex_report_path=codex_report_path,
+        gpt_input_path=gpt_input_path,
+    )
+
+    if source_round_id:
+        src_id = normalize_round_id(source_round_id)
+        update_round_state_file(round_state_path, source_round_id=src_id)
+
+    return actual_target_id, round_dir

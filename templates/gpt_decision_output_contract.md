@@ -1,15 +1,18 @@
 # GPT Decision Output Contract
 
-To ensure the automation pipeline can ingest your decisions, please provide your output as a single, valid JSON object following the schema below.
+To ensure the automation pipeline can ingest your decisions, please follow this response format.
 
-## 1. Output Format Requirements
+## 1. Response Structure
 
-1. **Strict JSON**: The output must be a single JSON object. Do not include introductory prose, explanations, or markdown formatting outside the JSON block.
-2. **Schema Compliance**: All required fields must be present.
-3. **Field Types**: Ensure numeric fields are numbers, and lists are arrays.
+1. **Reasoning**: Provide a brief explanation of your analysis and the reasoning behind your decisions.
+2. **Marker**: The literal string `DECISION_JSON_BEGIN` on a new line.
+3. **JSON Block**: A single JSON code block containing the `gpt_decision.json` content.
+4. **Marker**: The literal string `DECISION_JSON_END` on a new line.
 
-## 2. Required JSON Structure
+Example:
+Reasoning: I am adjusting parameters to improve exploration based on the recent logs.
 
+DECISION_JSON_BEGIN
 ```json
 {
   "schema_version": "1.0",
@@ -26,34 +29,32 @@ To ensure the automation pipeline can ingest your decisions, please provide your
   },
   "parameter_changes": [
     {
-      "name": "parameter_name",
-      "old_value": 0.0,
-      "new_value": 0.0,
-      "delta": 0.0,
-      "reason": "Detailed explanation of why this change was made."
+      "name": "revisit_penalty",
+      "old_value": 0.1,
+      "new_value": 0.12,
+      "delta": 0.02,
+      "reason": "Slight increase to encourage exploring new states."
     }
   ],
   "codex_analysis_focus": {
     "compare_targets": ["previous_round_run", "best_known_reference"],
     "required_logs": ["logs/train_steps.csv", "logs/eval_metrics.csv"],
     "required_plots": ["plots/reward_curve.png", "plots/coverage_curve.png"],
-    "questions": ["Specific question about the training results..."],
+    "questions": ["Is the agent discovering significantly more unique tiles?"],
     "expected_output_style": "Write a structured markdown report for GPT using the codex_report.md sections."
   },
   "reference_targets": {
-    "best_known_reference": "path/to/baseline/run",
+    "best_known_reference": "outputs/baseline_run",
     "manual_compare_targets": []
   },
-  "controller_notes": "Summary of experimental intent."
+  "controller_notes": "Experimenting with revisit penalty impact on exploration."
 }
 ```
+DECISION_JSON_END
 
-## 3. Key Notes for GPT
+## 2. JSON Schema Requirements
 
-- **`round_id`**: You can use a placeholder like `"round_xxxx"`. The ingestion tool will automatically replace it with the correct target round ID.
-- **`decision_status`**: Use `"run_next_round"` to continue the experiment, `"hold"` to pause, or `"stop"` to terminate.
-- **`parameter_changes`**: Every change must be documented with a reason. DO NOT skip this.
-- **`codex_analysis_focus`**:
-    - `compare_targets`: Use `"previous_round_run"` to compare with the last successful round.
-    - `questions`: These will be passed directly to the Codex analyzer. Be specific.
-- **`reference_targets`**: If you want to compare against a specific historical best run, provide its path in `best_known_reference`.
+1. **Schema Compliance**: All required fields must be present.
+2. **Round ID**: Use `"round_xxxx"` for the `round_id` field. The system will automatically resolve this to the correct next round ID.
+3. **Field Types**: Ensure numeric fields are numbers, and lists are arrays.
+4. **Decision Status**: Use `"run_next_round"` to continue, `"hold"` to pause, or `"stop"` to terminate.

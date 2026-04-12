@@ -28,30 +28,37 @@ def parse_args():
     return parser.parse_args()
 
 def extract_json_block(text: str) -> str:
+    """
+    Extracts JSON from text using markers and code blocks.
+    Priority:
+    1. Content between DECISION_JSON_BEGIN and DECISION_JSON_END
+    2. First json code block
+    3. First generic code block
+    4. First curly-brace object
+    """
     # 1. Try to find between markers
     marker_match = re.search(r"DECISION_JSON_BEGIN\s*(.*?)\s*DECISION_JSON_END", text, re.DOTALL | re.IGNORECASE)
+    content = text
     if marker_match:
+        print("Detected DECISION_JSON_BEGIN/END markers.")
         content = marker_match.group(1).strip()
-        # Find json block inside markers if present
-        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE)
-        if json_match:
-            return json_match.group(1).strip()
-        return content
 
-    # 2. Try to find any json code block
-    json_match = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL | re.IGNORECASE)
+    # 2. Try to find any json code block in the relevant content
+    json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL | re.IGNORECASE)
     if json_match:
         return json_match.group(1).strip()
 
     # 3. Try to find any markdown code block
-    code_match = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
+    code_match = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
     if code_match:
         return code_match.group(1).strip()
 
     # 4. Try to find something that looks like a JSON object
-    object_match = re.search(r"(\{.*\})", text, re.DOTALL)
-    if object_match:
-        return object_match.group(1).strip()
+    # We start from the first '{' and end at the last '}'
+    start = content.find('{')
+    end = content.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        return content[start:end+1].strip()
 
     return ""
 
@@ -65,7 +72,7 @@ def main():
         response_path = rounds_root() / rid / "gpt_decision_response.md"
     
     if not response_path.exists():
-        print(f"Error: Response file not found: {response_path}")
+        print(f"Error: Response file not found: {response_path}", file=sys.stderr)
         return 1
     
     output_path = args.output_file
@@ -73,35 +80,43 @@ def main():
         output_path = response_path.parent / "next_gpt_decision.json"
 
     print(f"Reading response from: {response_path}")
-    text = response_path.read_text(encoding="utf-8")
+    try:
+        text = response_path.read_text(encoding="utf-8")
+    except Exception as e:
+        print(f"Error reading file: {e}", file=sys.stderr)
+        return 1
     
     json_str = extract_json_block(text)
     if not json_str:
-        print("Error: Could not extract JSON block from response.")
+        print("Error: Could not extract any text segment that looks like a JSON block.", file=sys.stderr)
         return 1
     
     try:
-        # Save temporary file for validation
-        temp_file = output_path.with_suffix(".temp.json")
+        # Validate JSON syntax
         try:
             payload = json.loads(json_str)
-            write_json_file(temp_file, payload)
         except json.JSONDecodeError as e:
-            print(f"Error: Extracted text is not valid JSON: {e}")
+            print(f"Error: Extracted text is not syntactically valid JSON: {e}", file=sys.stderr)
+            print("--- Extracted text snippet ---")
+            print(json_str[:200] + "..." if len(json_str) > 200 else json_str)
             return 1
+        
+        # Save temporary file for protocol validation
+        temp_file = output_path.with_suffix(".temp.json")
+        write_json_file(temp_file, payload)
         
         # Validate against protocol
         try:
-            print("Validating JSON against protocol...")
+            print("Validating JSON against protocol schema...")
             load_decision_file(temp_file)
             print("Validation successful.")
         except ProtocolError as e:
-            print(f"Error: JSON failed protocol validation: {e}")
-            # Keep the bad JSON for debugging? The user said "明确报错"
-            temp_file.unlink()
+            print(f"Error: JSON failed protocol validation mapping: {e}", file=sys.stderr)
+            if temp_file.exists():
+                temp_file.unlink()
             return 1
         
-        # Rename temp to final
+        # Finalize
         if output_path.exists():
             output_path.unlink()
         temp_file.rename(output_path)

@@ -64,6 +64,9 @@ def run_git_command(cwd: Path, args: list[str]) -> subprocess.CompletedProcess:
 def main() -> int:
     args = parse_args()
     try:
+        if args.push and not args.commit:
+            raise ProtocolError("--push requires --commit to be specified.")
+
         # 1. Validation of local round
         round_id = normalize_round_id(args.round_id)
         local_round_dir = rounds_root() / round_id

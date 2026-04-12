@@ -333,13 +333,11 @@ python publish_round_to_exchange.py --round-id round_0013 --exchange-repo-dir ..
 python ingest_exchange_decision.py --input-file tmp/next_decision.json --source-round-id round_0013 --exchange-repo-dir ../RRL_test --sync-to-exchange
 ```
 
-#### 新增 CLI 工具说明
-- `publish_round_to_exchange.py`：
-  - `--exchange-repo-dir`：本地 clone 的交换仓库路径。
-  - `--commit` / `--push`：自动提交并推送到 GitHub。
-- `ingest_exchange_decision.py`：
-  - `--source-round-id`：记录该决策的来源。
-  - `--sync-to-exchange`：将决策 JSON 同步回交换仓库。
+#### 核心工具说明
+- `publish_round_to_exchange.py`：发布本地 round，生成索引消息。
+- `exchange_web_bridge.py`：自动化网页交互与结果抓取。
+- `ingest_exchange_decision.py`：导入交换决策，支持占位符解析。
+- `extract_gpt_decision.py`：通用决策提取工具，支持新的格式边界。
 
 ### 第七层：GPT 输出接入下一轮 round (Decision Ingest)
 
