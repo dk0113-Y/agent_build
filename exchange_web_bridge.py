@@ -21,9 +21,9 @@ from extract_gpt_decision import extract_json_block
 
 try:
     from playwright.sync_api import sync_playwright, TimeoutError
+    HAS_PLAYWRIGHT = True
 except ImportError:
-    print("Error: playwright not installed. Run 'pip install playwright' and 'playwright install chromium'.")
-    sys.exit(1)
+    HAS_PLAYWRIGHT = False
 
 def wait_for_prompt(page, timeout_ms=30000):
     """
@@ -106,6 +106,10 @@ def run_bridge():
         msg_content = msg_path.read_text(encoding="utf-8")
         
         # 2. Browser interaction
+        if not HAS_PLAYWRIGHT:
+            print("Error: playwright not installed. Run 'pip install playwright' and 'playwright install chromium'.")
+            sys.exit(1)
+            
         with sync_playwright() as p:
             if args.profile_dir:
                 profile_dir = str(args.profile_dir.resolve())
@@ -138,6 +142,25 @@ def run_bridge():
             if args.manual_confirm_send:
                 input("Message filled. Press Enter in this console to send...")
 
+            assistant_messages = page.locator('div.agent-turn, div[data-message-author-role="assistant"]')
+            initial_assistant_count = assistant_messages.count()
+            
+            debug_info = {
+               "round_id": round_id,
+               "index_message_path": str(msg_path),
+               "initial_assistant_count": initial_assistant_count,
+               "final_assistant_count": initial_assistant_count,
+               "stop_button_visible": False,
+               "composer_editable": False,
+               "last_text_length": 0,
+               "marker_begin_found": False,
+               "marker_end_found": False,
+               "json_code_block_found": False,
+               "completed": False,
+               "completed_reason": "",
+               "extract_error": ""
+            }
+
             print("Sending message...")
             send_button = page.locator('button[data-testid="send-button"], button[data-testid="fruitjuice-send-button"]')
             send_button.click()
@@ -145,55 +168,122 @@ def run_bridge():
             print("Waiting for response...")
             start_time = time.time()
             completed = False
-            time.sleep(3) # Initial wait for generation to start
+            completed_reason = ""
+            time.sleep(2) # Initial wait for generation to start
+            
+            latest_text = ""
+            stable_ticks = 0
             
             while time.time() - start_time < args.timeout_sec:
+                current_count = assistant_messages.count()
+                debug_info["final_assistant_count"] = current_count
+                
                 is_generating = page.locator('button[data-testid="stop-button"], button[aria-label="Stop generating"]').is_visible()
-                if not is_generating:
-                    time.sleep(3) # Wait for stability
-                    if not page.locator('button[data-testid="stop-button"], button[aria-label="Stop generating"]').is_visible():
+                debug_info["stop_button_visible"] = is_generating
+                
+                composer_editable = False
+                try:
+                    composer_editable = page.locator('#prompt-textarea, textarea#prompt-textarea, div#prompt-textarea[contenteditable="true"], [contenteditable="true"]#prompt-textarea').first.is_visible()
+                except:
+                    pass
+                debug_info["composer_editable"] = composer_editable
+                
+                if current_count > initial_assistant_count:
+                    try:
+                        latest_text = assistant_messages.nth(current_count - 1).inner_text(timeout=200)
+                    except:
+                        pass
+                elif current_count > 0:
+                    try:
+                        latest_text = assistant_messages.last.inner_text(timeout=200)
+                    except:
+                        pass
+                        
+                debug_info["last_text_length"] = len(latest_text)
+                has_begin = "DECISION_JSON_BEGIN" in latest_text
+                has_end = "DECISION_JSON_END" in latest_text
+                has_code = "```json" in latest_text
+                
+                debug_info["marker_begin_found"] = has_begin
+                debug_info["marker_end_found"] = has_end
+                debug_info["json_code_block_found"] = has_code
+                
+                if has_begin and has_end and has_code:
+                    completed = True
+                    completed_reason = "markers_found_early_exit"
+                    break
+                    
+                if current_count > initial_assistant_count and not is_generating and composer_editable:
+                    stable_ticks += 1
+                    if stable_ticks >= 3:
                         completed = True
+                        completed_reason = "stable_ui_signals"
                         break
+                else:
+                    stable_ticks = 0
+                
                 time.sleep(1)
 
-            if not completed:
-                print("Timeout waiting for response completion.", file=sys.stderr)
-                return 1
-
-            print("Extracting response...")
-            assistant_messages = page.locator('div.agent-turn, div[data-message-author-role="assistant"]')
-            count = assistant_messages.count()
-            print(f"assistant_message_count={count}")
-
-            if count == 0:
-                print(f"Error: No assistant messages found (assistant_message_count=0). URL: {page.url}", file=sys.stderr)
-                return 1
-
-            last_message = assistant_messages.last
-            raw_text = last_message.inner_text()
+            debug_info["completed"] = completed
+            debug_info["completed_reason"] = completed_reason
             
-            if not raw_text.strip():
-                print(f"Error: Empty response extracted (assistant_message_count={count}). URL: {page.url}", file=sys.stderr)
+            debug_path = tmp_dir / f"{round_id}_gpt_bridge_debug.json"
+            from automation_protocol import write_json_file
+            write_json_file(debug_path, debug_info)
+
+            raw_text = latest_text
+            if raw_text:
+                partial_path = tmp_dir / f"{round_id}_gpt_reply_last_visible.md"
+                partial_path.write_text(raw_text, encoding="utf-8")
+
+            if not completed:
+                print("Error: Timeout waiting for response completion. Debug state logged.", file=sys.stderr)
                 return 1
 
-            # Save raw reply (standard behavior)
+            if current_count == 0 or not raw_text.strip():
+                print(f"Error: No valid assistant response generated. URL: {page.url}", file=sys.stderr)
+                debug_info["extract_error"] = "No assistant reply generated"
+                write_json_file(debug_path, debug_info)
+                return 1
+
             raw_reply_path.write_text(raw_text, encoding="utf-8")
             print(f"raw_reply_path={raw_reply_path}")
 
     # 3. Save and Process JSON (standard behavior)
     json_str = extract_json_block(raw_text)
+    
+    debug_path = tmp_dir / f"{round_id}_gpt_bridge_debug.json"
+    if debug_path.exists():
+        from automation_protocol import read_json_file
+        debug_info = read_json_file(debug_path)
+    else:
+        debug_info = {}
+        
     if not json_str:
-        print("Error: Could not extract JSON from reply.", file=sys.stderr)
+        if not raw_text.strip():
+            debug_info["extract_error"] = "No reply text available"
+        elif "DECISION_JSON_BEGIN" not in raw_text:
+            debug_info["extract_error"] = "No marker DECISION_JSON_BEGIN found"
+        elif "DECISION_JSON_END" not in raw_text:
+            debug_info["extract_error"] = "No marker DECISION_JSON_END found"
+        else:
+            debug_info["extract_error"] = "Markers found but no ```json ... ``` code block inside"
+            
+        print(f"Error: Extraction failed: {debug_info['extract_error']}", file=sys.stderr)
+        from automation_protocol import write_json_file
+        write_json_file(debug_path, debug_info)
         return 1
     
     try:
-        # Validate JSON syntax
         payload = json.loads(json_str)
         json_output_path = tmp_dir / f"next_real_decision_{round_id}.json"
         from automation_protocol import write_json_file
         write_json_file(json_output_path, payload)
         print(f"json_output_path={json_output_path}")
     except Exception as e:
+        debug_info["extract_error"] = f"JSON parse failed: {e}"
+        from automation_protocol import write_json_file
+        write_json_file(debug_path, debug_info)
         print(f"Error during JSON processing: {e}", file=sys.stderr)
         return 1
 
