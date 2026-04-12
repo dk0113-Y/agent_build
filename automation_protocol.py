@@ -22,6 +22,8 @@ ALLOWED_DECISION_STATUS = {"run_next_round", "hold", "stop"}
 ROUND_ID_PATTERN = re.compile(r"^round_(\d{4})$")
 ROUND_STATE_FILENAME = "round_state.json"
 GPT_INPUT_FILENAME = "gpt_input.md"
+GPT_RESPONSE_FILENAME = "gpt_decision_response.md"
+NEXT_DECISION_FILENAME = "next_gpt_decision.json"
 SUCCESSFUL_ROUND_STATUSES = {"success"}
 
 

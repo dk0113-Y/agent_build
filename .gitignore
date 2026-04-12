@@ -3,3 +3,4 @@ logs/
 @AutomationLog.txt
 outputs/
 automation_rounds/
+tmp/
