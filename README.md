@@ -9,7 +9,12 @@
 3. 协议层 / round 层
    通过 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`gpt_input.md`、`tuning_policy.md`、`prepare_round.py`、`prepare_gpt_input.py` 把控制平面协议和文件握手层搭起来。
 
-当前仓库仍然不是成熟闭环系统。它没有接入 OpenAI API，没有依赖网页接口，也没有把“训练完成 -> 自动唤醒 Codex -> 自动改代码”串起来。
+当前仓库仍然不是一个全自动闭环系统。它通过 **GitHub 交换仓库 (Exchange Mode)** 与网页端 GPT 进行高效率协同：
+
+1. 本地生成真实的训练产物与分析报告。
+2. 将控制面协议文件同步至 GitHub 交换仓库。
+3. 网页端 GPT 基于交换仓库的文件进行决策，产出下一轮 JSON。
+4. 本地工具导入决策并开启新一轮。
 
 ## 依赖安装
 
@@ -303,7 +308,40 @@ python ingest_gpt_decision.py --input-file automation_rounds/round_0013/next_gpt
 - 判定回复完成采用务实策略（如停止生成按钮消失），若不稳定会直接报错。
 - 不会自动触发下一轮训练，仅完成文件层面的桥接。
 
-### 第六层：GPT 输出接入下一轮 round (Decision Ingest)
+### 第六层：GitHub 交换模式 (GitHub Exchange Mode)
+
+这是当前推荐的闭环主线。它通过一个公开的 GitHub 交换仓库（如 `dk0113-Y/RRL_test`）作为长期上下文和 GPT 阅读入口。
+
+#### 核心逻辑
+- **本地执行面**：负责真实训练、文件生成和状态维护。
+- **GitHub 交换面**：负责存放控制面材料（Manifest, Summary, Decision, Request, Report）。
+- **GPT 分析面**：GPT 通过索引消息定位交换仓库，阅读文件并给出下一轮决策。
+
+#### 运行示例
+
+1. 将本地 round 导出并推送至交换仓库：
+```bash
+python publish_round_to_exchange.py --round-id round_0013 --exchange-repo-dir ../RRL_test --repo-url https://github.com/dk0113-Y/RRL_test --commit --push
+```
+
+2. 发送索引消息：
+此时交换仓库的 `outbox/web_index_message_round_0013.md` 中已生成一条短消息，将其复制发送给网页端 GPT。
+
+3. 导入 GPT 决策：
+将 GPT 返回的 JSON 保存为本地文件，然后运行：
+```bash
+python ingest_exchange_decision.py --input-file tmp/next_decision.json --source-round-id round_0013 --exchange-repo-dir ../RRL_test --sync-to-exchange
+```
+
+#### 新增 CLI 工具说明
+- `publish_round_to_exchange.py`：
+  - `--exchange-repo-dir`：本地 clone 的交换仓库路径。
+  - `--commit` / `--push`：自动提交并推送到 GitHub。
+- `ingest_exchange_decision.py`：
+  - `--source-round-id`：记录该决策的来源。
+  - `--sync-to-exchange`：将决策 JSON 同步回交换仓库。
+
+### 第七层：GPT 输出接入下一轮 round (Decision Ingest)
 
 这一层闭合了“GPT 产出决策 -> 系统进入下一轮”的环路。用户只需将 GPT 的 JSON 输出保存到本地，即可通过工具自动初始化下一轮的所有协议文件。
 
