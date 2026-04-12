@@ -120,9 +120,17 @@ def main():
                 "codex_bridge_status": "",
                 "codex_bridge_reply_detected": False,
                 "triggered_synthetic_codex_fallback": False,
+                "codex_output_gate_passed": False,
+                "codex_report_nonempty": False,
+                "codex_output_gate_reason": "",
                 "used_real_gpt": False,
                 "triggered_synthetic_gpt_fallback": False,
                 "synthetic_gpt_fallback_strategy": "",
+                "gpt_output_gate_passed": False,
+                "gpt_decision_schema_valid": False,
+                "gpt_output_gate_reason": "",
+                "ingest_output_gate_passed": False,
+                "ingest_output_gate_reason": "",
                 "gpt_profile_dir": summary["gpt_profile_dir"],
                 "gpt_profile_mode": summary["gpt_profile_mode"],
                 "publish_pushed": False,
@@ -153,6 +161,9 @@ def main():
             
             run_log["codex_bridge_output_json"] = str(bridge_out_json)
             real_codex_worked = False
+            codex_gate_passed = False
+            codex_gate_reason = "bridge_not_run"
+            codex_report_nonempty = False
             
             if bridge_out_json.exists():
                 b_data = json.loads(bridge_out_json.read_text("utf-8"))
@@ -162,9 +173,37 @@ def main():
                 if b_data.get("success", False) and has_reply:
                     real_codex_worked = True
             
-            if res.returncode != 0:
+            # Codex output gate: require report + json, both non-empty
+            rep_file_obj = round_dir / "codex_report.md"
+            if rep_file_obj.exists() and rep_file_obj.read_text("utf-8").strip():
+                codex_report_nonempty = True
+            if bridge_out_json.exists() and codex_report_nonempty:
+                try:
+                    b_data = json.loads(bridge_out_json.read_text("utf-8"))
+                    if b_data.get("success") and b_data.get("reply_text", "").strip():
+                        codex_gate_passed = True
+                        codex_gate_reason = "ok"
+                    else:
+                        codex_gate_reason = "output_json_success_false_or_empty"
+                except Exception as e:
+                    codex_gate_reason = f"output_json_parse_error: {e}"
+            elif not bridge_out_json.exists():
+                codex_gate_reason = "output_json_missing"
+            elif not codex_report_nonempty:
+                codex_gate_reason = "codex_report_empty_or_missing"
+                
+            run_log["codex_output_gate_passed"] = codex_gate_passed
+            run_log["codex_report_nonempty"] = codex_report_nonempty
+            run_log["codex_output_gate_reason"] = codex_gate_reason
+            
+            if res.returncode != 0 and not codex_gate_passed:
                 summary["stop_reason"] = "codex_bridge_failed"
-                print("Codex bridge strictly failed.")
+                print(f"Codex bridge strictly failed. Gate reason: {codex_gate_reason}")
+                break
+            
+            if not codex_gate_passed:
+                summary["stop_reason"] = f"codex_output_gate_failed: {codex_gate_reason}"
+                print(f"Codex artifact gate not satisfied: {codex_gate_reason}")
                 break
                 
             if real_codex_worked:
@@ -202,7 +241,36 @@ def main():
                 
             res = subprocess.run(bridge_cmd)
             
-            if res.returncode != 0 and not next_json_path.exists():
+            # GPT output gate: next_real_decision json must exist, be parseable, and pass schema basics
+            gpt_gate_passed = False
+            gpt_gate_reason = "bridge_not_run"
+            gpt_schema_valid = False
+            
+            gpt_reply_md = Path("tmp") / f"{current_round_id}_gpt_reply.md"
+            if next_json_path.exists():
+                try:
+                    decision_candidate = json.loads(next_json_path.read_text("utf-8"))
+                    required_keys = {"schema_version", "decision_status", "target_program", "run_args"}
+                    if required_keys.issubset(decision_candidate.keys()):
+                        gpt_schema_valid = True
+                        # Optionally check raw reply file
+                        if gpt_reply_md.exists() and not gpt_reply_md.read_text("utf-8").strip():
+                            gpt_gate_reason = "gpt_reply_md_empty"
+                        else:
+                            gpt_gate_passed = True
+                            gpt_gate_reason = "ok"
+                    else:
+                        gpt_gate_reason = "decision_json_missing_required_keys"
+                except Exception as e:
+                    gpt_gate_reason = f"decision_json_parse_failed: {e}"
+            else:
+                gpt_gate_reason = "next_real_decision_json_missing"
+            
+            run_log["gpt_output_gate_passed"] = gpt_gate_passed
+            run_log["gpt_decision_schema_valid"] = gpt_schema_valid
+            run_log["gpt_output_gate_reason"] = gpt_gate_reason
+            
+            if res.returncode != 0 and not gpt_gate_passed:
                 print("GPT Web bridge failed.")
                 if not args.allow_synthetic_gpt_fallback:
                     print("Strict Mode: Rehearsal halted due to missing GPT API response/Playwright failure.")
@@ -242,23 +310,39 @@ def main():
                 next_json_path.write_text(json.dumps(next_dec, indent=2), "utf-8")
                 
                 print("=> Ingesting synthetic debug decision...")
-            else:
+            if gpt_gate_passed:
                 run_log["used_real_gpt"] = True
                 print("=> Ingesting real GPT decision...")
+            elif args.allow_synthetic_gpt_fallback:
+                print("Fallback enabled. Generating mock GPT decision...")
                 
             res_ing = subprocess.run([sys.executable, "ingest_exchange_decision.py", "--input-file", str(next_json_path), "--source-round-id", current_round_id, "--exchange-repo-dir", str(args.exchange_repo)])
             if res_ing.returncode != 0:
                 summary["stop_reason"] = "ingest_failed"
+                run_log["ingest_output_gate_reason"] = "ingest_returncode_nonzero"
                 break
             
-            # Find next round
-            states = [json.loads(p.read_text("utf-8")) for p in rounds_dir.glob("*/round_state.json")]
-            new_states = sorted([s for s in states if s.get("source_round_id") == current_round_id], key=lambda x: x["round_id"])
+            # Ingest output gate: verify new round dir was actually created with valid lineage
+            states_after = [json.loads(p.read_text("utf-8")) for p in rounds_dir.glob("*/round_state.json")]
+            new_states = sorted([s for s in states_after if s.get("source_round_id") == current_round_id], key=lambda x: x["round_id"])
             if not new_states:
+                run_log["ingest_output_gate_passed"] = False
+                run_log["ingest_output_gate_reason"] = "next_round_not_created"
                 summary["stop_reason"] = "next_round_not_created"
                 break
             
-            current_round_id = new_states[-1]["round_id"]
+            new_round_id = new_states[-1]["round_id"]
+            new_round_dir = rounds_dir / new_round_id
+            new_decision = new_round_dir / "gpt_decision.json"
+            if not new_decision.exists():
+                run_log["ingest_output_gate_passed"] = False
+                run_log["ingest_output_gate_reason"] = f"gpt_decision_missing_in_new_round_{new_round_id}"
+                summary["stop_reason"] = "next_round_not_created"
+                break
+            
+            run_log["ingest_output_gate_passed"] = True
+            run_log["ingest_output_gate_reason"] = "ok"
+            current_round_id = new_round_id
             
         else: # for-else
             summary["stop_reason"] = "max_rounds_reached"

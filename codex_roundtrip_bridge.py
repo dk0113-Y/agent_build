@@ -11,6 +11,7 @@ def parse_args():
     parser.add_argument("--allow-synthetic-fallback", action="store_true", help="Use synthetic mock report if UI automation fails.", default=False)
     parser.add_argument("--output-json", type=Path, help="Optional specific JSON path to output extraction results to.")
     parser.add_argument("--expect-substring", type=str, help="Enforce content-level verification.")
+    parser.add_argument("--watchdog-timeout-sec", type=int, default=600, help="Max seconds to wait for the UI bridge process (watchdog). Does not control completion logic.")
     return parser.parse_args()
 
 def generate_mock_report(request_path: Path) -> str:
@@ -31,12 +32,33 @@ def generate_mock_report(request_path: Path) -> str:
         "Detailed evaluations confirm progress toward generalized performance."
     )
 
+def _artifact_gate(output_json: Path, report: Path, expect_substring: str | None) -> tuple[bool, str]:
+    """Validate real output artifacts after bridge subprocess exits. Returns (passed, reason)."""
+    if not output_json.exists():
+        return False, "bridge_exited_without_output_json"
+    try:
+        data = json.loads(output_json.read_text("utf-8"))
+    except Exception as e:
+        return False, f"bridge_output_json_invalid: {e}"
+    if not data.get("success"):
+        return False, "bridge_output_json_success_false"
+    if not data.get("reply_text", "").strip():
+        return False, "bridge_output_json_reply_text_empty"
+    if expect_substring and not data.get("reply_matches_expectation", False):
+        return False, "bridge_content_expectation_mismatch"
+    if not report.exists() or not report.read_text("utf-8").strip():
+        return False, "report_not_written_or_empty"
+    return True, "ok"
+
+
 def main():
     args = parse_args()
     
     print("Executing demo_codex_bridge.py for UI automation in send-and-wait mode...")
     bridge_script = Path(__file__).parent / "demo_codex_bridge.py"
     output_json = args.output_json if args.output_json else Path(__file__).parent / "tmp" / "codex_bridge_out.json"
+    
+    failure_reason = ""
     
     try:
         cmd = [
@@ -47,29 +69,45 @@ def main():
         ]
         if args.expect_substring:
             cmd.extend(["--expect-substring", args.expect_substring])
-            
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         
-        if output_json.exists():
-            data = json.loads(output_json.read_text("utf-8"))
-            has_success = bool(data.get("success"))
-            has_reply = bool(data.get("reply_text"))
-            matches_expectation = data.get("reply_matches_expectation", False) if args.expect_substring else True
-            
-            if has_success and has_reply and matches_expectation:
-                args.report.write_text(data["reply_text"], "utf-8")
-                print(f"Successfully extracted UI response to {args.report.name}")
-                return 0
-            else:
-                print("Bridge JSON returned but indicated failure, missing reply_text, or content mismatch:")
-                print(data)
+        print(f"bridge_watchdog_timeout={args.watchdog_timeout_sec}s")
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=args.watchdog_timeout_sec)
+        print(f"bridge_process_exited: returncode={res.returncode}")
+
+        # Artifact confirmation window: poll for up to 15s after process exits
+        import time as _time
+        deadline = _time.time() + 15
+        gate_passed = False
+        gate_reason = "not_checked"
+        while _time.time() < deadline:
+            gate_passed, gate_reason = _artifact_gate(output_json, args.report, args.expect_substring)
+            if gate_passed:
+                break
+            # If report written by bridge already, don't wait out full 15s
+            if output_json.exists():
+                try:
+                    d = json.loads(output_json.read_text("utf-8"))
+                    if d.get("success") and d.get("reply_text"):
+                        args.report.write_text(d["reply_text"], "utf-8")
+                except Exception:
+                    pass
+            _time.sleep(1)
+        
+        if gate_passed:
+            print(f"Artifact gate passed. Report written to {args.report.name}")
+            return 0
         else:
-            print("UI Bridge execution failed or didn't output a JSON status file.")
-            print("STDOUT:", res.stdout)
-            print("STDERR:", res.stderr)
+            failure_reason = gate_reason
+            print(f"Artifact gate failed: {failure_reason}")
+            print("STDOUT:", res.stdout[-2000:] if res.stdout else "")
+            print("STDERR:", res.stderr[-2000:] if res.stderr else "")
             
+    except subprocess.TimeoutExpired:
+        failure_reason = "bridge_watchdog_timeout"
+        print(f"Error: {failure_reason} after {args.watchdog_timeout_sec}s", file=sys.stderr)
     except Exception as e:
-        print(f"Failed to run UI bridge: {e}")
+        failure_reason = f"bridge_exception: {e}"
+        print(f"Failed to run UI bridge: {e}", file=sys.stderr)
 
     if args.allow_synthetic_fallback:
         print("Falling back to robust synthetic report generation for debug rehearsal continuity...")
@@ -78,7 +116,7 @@ def main():
         print(f"Wrote synthetic report to {args.report.name}")
         return 0
     else:
-        print("Strict mode error: Real UI automation to Codex failed. --allow-synthetic-fallback not specified.")
+        print(f"Strict mode error: Real UI automation to Codex failed ({failure_reason}). --allow-synthetic-fallback not specified.")
         return 1
 
 if __name__ == "__main__":

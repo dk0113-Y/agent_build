@@ -81,7 +81,7 @@ def parse_args():
     parser.add_argument("--profile-dir", type=Path, help="Browser profile directory for login persistence.")
     parser.add_argument("--headless", type=str, default="false", help="Run browser in headless mode (true/false).")
     parser.add_argument("--manual-confirm-send", action="store_true", help="Wait for Enter before sending message.")
-    parser.add_argument("--timeout-sec", type=int, default=120, help="Wait timeout for response.")
+    parser.add_argument("--timeout-sec", type=int, default=300, help="Watchdog timeout seconds. Bridge succeeds only when output artifact is produced, not when this expires.")
     parser.add_argument("--extract-only", action="store_true", help="Only extract JSON from existing raw reply (skip browser).")
     parser.add_argument("--ingest-after-extract", action="store_true", help="Automatically call ingest script after extraction.")
     parser.add_argument("--url", default="https://chatgpt.com", help="ChatGPT URL.")
@@ -331,12 +331,13 @@ def run_bridge():
                 partial_path.write_text(raw_text, encoding="utf-8")
 
             if not completed:
-                print("Error: Timeout waiting for response completion. Debug state logged.", file=sys.stderr)
+                debug_info["extract_error"] = "watchdog_timeout_before_output_json"
+                print(f"Error: {debug_info['extract_error']}. Debug state logged.", file=sys.stderr)
                 return 1
 
             if current_count == 0 or not raw_text.strip():
-                print(f"Error: No valid assistant response generated. URL: {page.url}", file=sys.stderr)
-                debug_info["extract_error"] = "No assistant reply generated"
+                debug_info["extract_error"] = "reply_seen_but_output_not_extractable"
+                print(f"Error: {debug_info['extract_error']}. URL: {page.url}", file=sys.stderr)
                 write_json_file(debug_path, debug_info)
                 return 1
 
@@ -374,8 +375,14 @@ def run_bridge():
         from automation_protocol import write_json_file
         write_json_file(json_output_path, payload)
         print(f"json_output_path={json_output_path}")
+        # Anchor: only verify success after output file is actually on disk
+        if not json_output_path.exists():
+            debug_info["extract_error"] = "reply_text_written_but_json_not_written"
+            write_json_file(debug_path, debug_info)
+            print(f"Error: {debug_info['extract_error']}", file=sys.stderr)
+            return 1
     except Exception as e:
-        debug_info["extract_error"] = f"JSON parse failed: {e}"
+        debug_info["extract_error"] = f"reply_text_written_but_json_not_written: JSON parse failed: {e}"
         from automation_protocol import write_json_file
         write_json_file(debug_path, debug_info)
         print(f"Error during JSON processing: {e}", file=sys.stderr)
