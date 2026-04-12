@@ -10,6 +10,7 @@ def parse_args():
     parser.add_argument("--report", type=Path, required=True, help="Output codex_report.md")
     parser.add_argument("--allow-synthetic-fallback", action="store_true", help="Use synthetic mock report if UI automation fails.", default=False)
     parser.add_argument("--output-json", type=Path, help="Optional specific JSON path to output extraction results to.")
+    parser.add_argument("--expect-substring", type=str, help="Enforce content-level verification.")
     return parser.parse_args()
 
 def generate_mock_report(request_path: Path) -> str:
@@ -38,21 +39,29 @@ def main():
     output_json = args.output_json if args.output_json else Path(__file__).parent / "tmp" / "codex_bridge_out.json"
     
     try:
-        res = subprocess.run([
+        cmd = [
             sys.executable, str(bridge_script), 
             "--send-and-wait", 
             "--message-file", str(args.request),
             "--output-json", str(output_json)
-        ], capture_output=True, text=True, timeout=90)
+        ]
+        if args.expect_substring:
+            cmd.extend(["--expect-substring", args.expect_substring])
+            
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
         
         if output_json.exists():
             data = json.loads(output_json.read_text("utf-8"))
-            if data.get("success") and data.get("reply_text"):
+            has_success = bool(data.get("success"))
+            has_reply = bool(data.get("reply_text"))
+            matches_expectation = data.get("reply_matches_expectation", False) if args.expect_substring else True
+            
+            if has_success and has_reply and matches_expectation:
                 args.report.write_text(data["reply_text"], "utf-8")
                 print(f"Successfully extracted UI response to {args.report.name}")
                 return 0
             else:
-                print("Bridge JSON returned but indicated failure or missing reply_text:")
+                print("Bridge JSON returned but indicated failure, missing reply_text, or content mismatch:")
                 print(data)
         else:
             print("UI Bridge execution failed or didn't output a JSON status file.")

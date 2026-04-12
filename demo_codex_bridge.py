@@ -515,7 +515,7 @@ class CodexBridge:
             },
         )
 
-    def wait_for_arbitrary_reply(self, baseline_visible_count: int) -> tuple[bool, str, dict[str, Any]]:
+    def wait_for_arbitrary_reply(self, baseline_visible_count: int, expect_substring: str | None = None, prompt: str | None = None) -> tuple[bool, str, dict[str, Any]]:
         deadline = time.time() + float(self.config.get("ui_timeout_sec", 30.0))
         last_count = baseline_visible_count
         stable_ticks = 0
@@ -534,13 +534,44 @@ class CodexBridge:
                 "baseline": baseline_visible_count
             }
 
-            # Prompt appears (+1), Reply appears (+1)
-            # Or perhaps just wait for stability
             if current_count > baseline_visible_count:
+                new_texts = texts[baseline_visible_count:]
+                
+                if expect_substring:
+                    # If we have an expected substring, scan all new texts continuously. 
+                    # If any contains it and it's not the prompt itself, we consider it a verified success immediately.
+                    for item in new_texts:
+                        if prompt and prompt.strip() in item["text"]:
+                            continue
+                        if expect_substring in item["text"]:
+                            reply_text = item["text"]
+                            last_snapshot["reply_matches_expectation"] = True
+                            last_snapshot["expected_substring"] = expect_substring
+                            return True, reply_text, last_snapshot
+                
+                # If we're not looking for a substring, or haven't found it yet, we wait for stability.
                 if current_count == last_count:
                     stable_ticks += 1
                     if stable_ticks >= 4:  # roughly 2 seconds stable
-                        reply_text = texts[-1]["text"] if texts else ""
+                        
+                        if expect_substring:
+                            # Reached stability but never found expected substring => fail
+                            last_snapshot["reply_matches_expectation"] = False
+                            last_snapshot["expected_substring"] = expect_substring
+                            last_snapshot["failure_reason"] = "Stable but expected substring not found in any new texts."
+                            last_snapshot["candidate_text"] = new_texts[-1]["text"] if new_texts else ""
+                            return False, last_snapshot["candidate_text"], last_snapshot
+                        
+                        # Filter to find the best candidate (not the prompt itself, reasonable length)
+                        valid_candidates = []
+                        for item in new_texts:
+                            txt = item["text"]
+                            if prompt and prompt in txt:
+                                continue # skip echoing the prompt
+                            if len(txt.strip()) > 3:
+                                valid_candidates.append(txt)
+                        
+                        reply_text = valid_candidates[-1] if valid_candidates else (new_texts[-1]["text"] if new_texts else "")
                         return True, reply_text, last_snapshot
                 else:
                     stable_ticks = 0
@@ -548,10 +579,16 @@ class CodexBridge:
             last_count = current_count
             time.sleep(float(self.config.get("poll_interval_sec", 0.5)))
 
-        if self.config.get("enable_clipboard_fallback", False):
+        # Timeout reached
+        if self.config.get("enable_clipboard_fallback", False) and not expect_substring:
             success, fallback_text, extra = self.clipboard_fallback("", baseline_visible_count)
             extra["ui_last_snapshot"] = last_snapshot
             return True, fallback_text, extra
+
+        if expect_substring:
+            last_snapshot["reply_matches_expectation"] = False
+            last_snapshot["expected_substring"] = expect_substring
+            last_snapshot["failure_reason"] = "Timeout reached. Expected substring not found."
 
         return False, "", last_snapshot
 
@@ -829,6 +866,7 @@ def run_send_or_demo(
     prompt_override: str | None = None,
     sent_message_source: str = "ack",
     message_path: str = "",
+    expect_substring: str | None = None,
 ) -> DemoResult:
     bridge = CodexBridge(config, logs_dir)
     stamp = now_ts()
@@ -849,6 +887,7 @@ def run_send_or_demo(
         "message_probe_post_send_count": None,
         "send_confirmation_status": "",
         "send_confirmation_reason": "",
+        "expect_substring": expect_substring,
     }
     if message_path:
         payload["message_path"] = message_path
@@ -961,23 +1000,38 @@ def run_send_or_demo(
             success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
         else:
             # We are in send-and-wait mode for an arbitrary message
-            success, reply_text, extra = bridge.wait_for_arbitrary_reply(baseline_visible_count=payload.get("baseline_visible_text_count", 0))
+            success, reply_text, extra = bridge.wait_for_arbitrary_reply(
+                baseline_visible_count=payload.get("baseline_visible_text_count", 0),
+                expect_substring=payload.get("expect_substring"),
+                prompt=prompt
+            )
 
         payload["reply_detection"] = extra
         payload["detected_reply_text"] = reply_text
         payload["success"] = bool(success)
         payload["status"] = "reply_detected" if success else "reply_not_detected"
-        payload["message"] = (
-            "Reply was detected in the Codex UI."
-            if success
-            else "Reply was not detected before timeout."
-        )
+        
+        if payload.get("expect_substring"):
+            payload["reply_matches_expectation"] = extra.get("reply_matches_expectation", False)
+            if payload["reply_matches_expectation"]:
+                payload["status"] = "reply_verified"
+                payload["message"] = "Reply verified to match expected content."
+            else:
+                payload["status"] = extra.get("failure_reason", "reply_content_mismatch")
+                payload["message"] = "Reply verification failed."
+                payload["success"] = False # explicitly marking as failed since verified check missed
+        else:
+            payload["message"] = (
+                "Reply was detected in the Codex UI."
+                if success
+                else "Reply was not detected before timeout."
+            )
         if reply_text:
             save_text(transcript_path, reply_text)
             payload["detected_reply_text_path"] = str(transcript_path)
         write_log(log_path, payload)
         return DemoResult(
-            bool(success),
+            bool(payload["success"]),
             payload["status"],
             payload["message"],
             log_path,
@@ -1003,6 +1057,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inspect-ui", action="store_true", help="Inspect candidate windows/controls and dump JSON.")
     parser.add_argument("--send-only", action="store_true", help="Focus window, paste prompt, optionally send, but do not wait.")
     parser.add_argument("--send-and-wait", action="store_true", help="Send arbitrary message and wait for an arbitrary reply text to appear safely.")
+    parser.add_argument("--expect-substring", type=str, help="Optionally verify content-level validation using expected substring text.")
     parser.add_argument("--demo", action="store_true", help="Run the full bridge demo: focus, send, wait, read, log.")
     parser.add_argument("--dry-run", action="store_true", help="Print and log the planned action without sending.")
     parser.add_argument("--manual-confirm-send", action="store_true", help="Pause after paste and wait for Enter in console.")
@@ -1044,6 +1099,7 @@ def main() -> int:
             prompt_override=prompt_override,
             sent_message_source=sent_message_source,
             message_path=message_path,
+            expect_substring=args.expect_substring,
         )
 
     print(f"status={result.status}")
@@ -1069,6 +1125,17 @@ def main() -> int:
             "log_path": str(result.log_path),
             "reply_text": result.reply_text,
         }
+        
+        # Merge expected testing status properties
+        if hasattr(result, "status"):
+            with open(result.log_path, "r", encoding="utf-8") as f:
+                saved_payload = json.load(f)
+                if "reply_matches_expectation" in saved_payload:
+                    out_dict["reply_matches_expectation"] = saved_payload["reply_matches_expectation"]
+                    out_dict["expected_substring"] = saved_payload.get("reply_detection", {}).get("expected_substring", "")
+                    out_dict["failure_reason"] = saved_payload.get("reply_detection", {}).get("failure_reason", "")
+                    out_dict["candidate_text"] = saved_payload.get("reply_detection", {}).get("candidate_text", "")
+
         args.output_json.write_text(json.dumps(out_dict, indent=2), "utf-8")
         
     return 0 if result.success else 1
