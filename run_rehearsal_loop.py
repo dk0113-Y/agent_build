@@ -308,19 +308,30 @@ def main():
                 }
                 next_json_path.parent.mkdir(exist_ok=True)
                 next_json_path.write_text(json.dumps(next_dec, indent=2), "utf-8")
+                # Re-evaluate gate after synthetic json was written
+                if next_json_path.exists():
+                    try:
+                        _d = json.loads(next_json_path.read_text("utf-8"))
+                        if {"schema_version", "decision_status", "target_program", "run_args"}.issubset(_d.keys()):
+                            gpt_gate_passed = True
+                            gpt_gate_reason = "ok_synthetic_fallback"
+                            run_log["gpt_output_gate_passed"] = True
+                            run_log["gpt_output_gate_reason"] = gpt_gate_reason
+                    except Exception:
+                        pass
 
-            # Unconditional gate: even if bridge returned 0, artifact must satisfy gate
+            # Unconditional gate: even if bridge returned 0, artifact must satisfy gate before ingest
             if not gpt_gate_passed:
                 summary["stop_reason"] = f"gpt_output_gate_failed: {gpt_gate_reason}"
                 print(f"GPT artifact gate not satisfied: {gpt_gate_reason}")
                 break
-                
+
+            # Gate passed — safe to proceed to ingest
+            if run_log.get("triggered_synthetic_gpt_fallback"):
                 print("=> Ingesting synthetic debug decision...")
-            if gpt_gate_passed:
+            else:
                 run_log["used_real_gpt"] = True
                 print("=> Ingesting real GPT decision...")
-            elif args.allow_synthetic_gpt_fallback:
-                print("Fallback enabled. Generating mock GPT decision...")
                 
             res_ing = subprocess.run([sys.executable, "ingest_exchange_decision.py", "--input-file", str(next_json_path), "--source-round-id", current_round_id, "--exchange-repo-dir", str(args.exchange_repo)])
             if res_ing.returncode != 0:
