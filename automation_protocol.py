@@ -89,8 +89,9 @@ class RoundState:
     training_return_code: int | None
     bridge_invoked: bool
     bridge_status: str
-    created_at: str
-    updated_at: str
+    source_round_id: str = ""
+    created_at: str = ""
+    updated_at: str = ""
 
 
 @dataclass
@@ -396,6 +397,7 @@ def build_round_state(
         training_return_code=None,
         bridge_invoked=False,
         bridge_status="not_invoked",
+        source_round_id="",
         created_at=timestamp,
         updated_at=timestamp,
     )
@@ -414,6 +416,7 @@ def round_state_to_dict(state: RoundState) -> dict[str, Any]:
         "training_return_code": state.training_return_code,
         "bridge_invoked": state.bridge_invoked,
         "bridge_status": state.bridge_status,
+        "source_round_id": state.source_round_id,
         "created_at": state.created_at,
         "updated_at": state.updated_at,
     }
@@ -448,6 +451,7 @@ def load_round_state_file(path: Path) -> RoundState:
         training_return_code=training_return_code,
         bridge_invoked=bridge_invoked,
         bridge_status=_require_string(payload, "bridge_status"),
+        source_round_id=str(payload.get("source_round_id", "")).strip(),
         created_at=_require_string(payload, "created_at"),
         updated_at=_require_string(payload, "updated_at"),
     )

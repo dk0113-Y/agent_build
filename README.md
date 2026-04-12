@@ -264,6 +264,31 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 python prepare_gpt_input.py --round-id round_0001
 ```
 
+### 第四层：GPT 输出接入下一轮 round (Decision Ingest)
+
+这一层闭合了“GPT 产出决策 -> 系统进入下一轮”的环路。用户只需将 GPT 的 JSON 输出保存到本地，即可通过工具自动初始化下一轮的所有协议文件。
+
+#### 运行方式
+
+把 GPT 产出的 JSON 导入为一个全新的 round：
+
+```bash
+python ingest_gpt_decision.py --input-file tmp/next_decision.json --source-round-id round_0011
+```
+
+参数说明：
+- `--input-file`：必需，指向 GPT 产出的 JSON 文件。
+- `--target-round-id`：可选，指定目标 round id；不传时自动取下一个。
+- `--source-round-id`：可选，记录该决策是基于哪一轮的输入生成的（会存入 `round_state.json`）。
+- `--force`：可选，允许覆盖已存在的 round 目录。
+
+#### 核心行为
+1. 读取并验证 JSON 是否符合协议 schema。
+2. 自动创建新的 round 目录。
+3. 将 `round_id` 自动修正为目标 round id 并写入 `gpt_decision.json`。
+4. 初始化同目录下的 `codex_request.md`、`codex_report.md`、`gpt_input.md` 为模板/占位状态。
+5. 在 `round_state.json` 中记录 `source_round_id` 建立血缘关系。
+
 ### `gpt_decision.json` 的最小 schema
 
 当前协议层至少包含这些字段：
