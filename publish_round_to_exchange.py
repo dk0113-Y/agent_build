@@ -19,8 +19,10 @@ from automation_protocol import (
     write_json_file,
 )
 from exchange_protocol import (
+    EXCHANGE_ANCHOR_DEFINITION,
     EXCHANGE_SCHEMA_VERSION,
     build_web_index_message,
+    build_empty_current_round,
     get_now_iso,
     initialize_exchange_repo,
     load_round_summary,
@@ -29,6 +31,10 @@ from exchange_protocol import (
     stable_context_files_for_mode,
     sync_file_to_exchange,
 )
+
+
+PREFERRED_EXCHANGE_ANCHOR_FIELD = "exchange_anchor_commit_sha"
+DEPRECATED_EXCHANGE_ANCHOR_FIELD = "last_exchange_commit_sha"
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +95,13 @@ def formal_round_extra_files(local_round_dir: Path) -> list[Path]:
         "training_summary.txt",
     ]
     return [local_round_dir / name for name in names]
+
+
+def set_exchange_anchor_fields(payload: dict[str, object], anchor_sha: str | None) -> dict[str, object]:
+    payload[PREFERRED_EXCHANGE_ANCHOR_FIELD] = anchor_sha
+    payload[DEPRECATED_EXCHANGE_ANCHOR_FIELD] = anchor_sha
+    payload["exchange_anchor_definition"] = EXCHANGE_ANCHOR_DEFINITION
+    return payload
 
 
 def main() -> int:
@@ -172,10 +185,11 @@ def main() -> int:
 
         recommended_entry_docs = recommended_entry_docs_for_mode(experiment_mode)
         stable_context_files = stable_context_files_for_mode(experiment_mode)
-        manifest = {
+        manifest = set_exchange_anchor_fields({
             "schema_version": EXCHANGE_SCHEMA_VERSION,
             "round_id": round_id,
             "project_name": project_name_for_mode(experiment_mode),
+            "exchange_state": "round_published",
             "experiment_mode": experiment_mode,
             "source_of_truth_repo": decision_payload.get("source_of_truth_repo", ""),
             "local_execution_repo_path": decision_payload.get("local_execution_repo_path", ""),
@@ -192,15 +206,17 @@ def main() -> int:
             "expected_output_file": "next_gpt_decision.json",
             "notes": decision_payload.get("controller_notes", ""),
             "updated_at": get_now_iso(),
-        }
+        }, None)
         manifest_path = target_round_dir / "index_manifest.json"
         write_json_file(manifest_path, manifest)
 
-        current_round_payload = {
+        current_round_payload = set_exchange_anchor_fields({
+            **build_empty_current_round(exchange_url=args.repo_url, branch=args.branch),
             "schema_version": EXCHANGE_SCHEMA_VERSION,
             "project_name": project_name_for_mode(experiment_mode),
             "exchange_repo_url": args.repo_url,
             "branch": args.branch,
+            "exchange_state": "round_published",
             "current_round_id": round_id,
             "current_round_manifest": f"rounds/{round_id}/index_manifest.json",
             "experiment_mode": experiment_mode,
@@ -212,9 +228,14 @@ def main() -> int:
             "recommended_entry_docs": recommended_entry_docs,
             "stable_context_files": stable_context_files,
             "expected_output_file": "next_gpt_decision.json",
-            "last_exchange_commit_sha": "",
+            "notes": [
+                "Read `exchange_anchor_commit_sha` as the published bundle anchor commit.",
+                "That anchor commit is the first commit that contains the published round bundle.",
+                "The final pushed HEAD may be a later CURRENT_ROUND pointer-update commit.",
+                "`last_exchange_commit_sha` is kept only as a deprecated compatibility alias.",
+            ],
             "updated_at": get_now_iso(),
-        }
+        }, None)
         current_round_path = exchange_dir / "CURRENT_ROUND.json"
         write_json_file(current_round_path, current_round_payload)
 
@@ -248,12 +269,26 @@ def main() -> int:
                 return 0
             run_git_command(exchange_dir, ["commit", "-m", f"Publish {round_id}"])
             bundle_commit_sha = run_git_command(exchange_dir, ["rev-parse", "HEAD"]).stdout.strip()
-            current_round_payload["last_exchange_commit_sha"] = bundle_commit_sha
+            set_exchange_anchor_fields(current_round_payload, bundle_commit_sha)
+            round_summary = set_exchange_anchor_fields(round_summary, bundle_commit_sha)
+            manifest = set_exchange_anchor_fields(manifest, bundle_commit_sha)
             write_json_file(current_round_path, current_round_payload)
-            run_git_command(exchange_dir, ["add", "CURRENT_ROUND.json"])
+            write_json_file(summary_path, round_summary)
+            artifact_hashes["round_summary.json"] = sha256_of_file(summary_path)
+            manifest["artifact_hashes"] = artifact_hashes
+            write_json_file(manifest_path, manifest)
+            run_git_command(
+                exchange_dir,
+                [
+                    "add",
+                    "CURRENT_ROUND.json",
+                    str(manifest_path.relative_to(exchange_dir)),
+                    str(summary_path.relative_to(exchange_dir)),
+                ],
+            )
             status_result = run_git_command(exchange_dir, ["status", "--porcelain"])
             if status_result.stdout.strip():
-                run_git_command(exchange_dir, ["commit", "-m", f"Update CURRENT_ROUND anchor for {round_id}"])
+                run_git_command(exchange_dir, ["commit", "-m", f"Record exchange anchor for {round_id}"])
             final_commit_sha = run_git_command(exchange_dir, ["rev-parse", "HEAD"]).stdout.strip()
             if args.push:
                 run_git_command(exchange_dir, ["push", "origin", args.branch])
@@ -265,7 +300,8 @@ def main() -> int:
                 local_round_dir / "round_state.json",
                 source_exchange_commit_sha=final_commit_sha or bundle_commit_sha,
             )
-            print(f"bundle_commit_sha={bundle_commit_sha}")
+            print(f"{PREFERRED_EXCHANGE_ANCHOR_FIELD}={bundle_commit_sha}")
+            print(f"{DEPRECATED_EXCHANGE_ANCHOR_FIELD}={bundle_commit_sha}")
             print(f"final_commit_sha={final_commit_sha or bundle_commit_sha}")
         return 0
     except ProtocolError as exc:

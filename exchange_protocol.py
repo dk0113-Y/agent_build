@@ -11,6 +11,7 @@ from typing import Any
 
 
 EXCHANGE_SCHEMA_VERSION = "2.0"
+EXCHANGE_ANCHOR_DEFINITION = "published_bundle_commit_reachable_from_current_head"
 
 
 def get_now_iso() -> str:
@@ -64,10 +65,56 @@ def project_name_for_mode(experiment_mode: str) -> str:
     return "Automation rehearsal exchange"
 
 
+def build_empty_current_round(*, exchange_url: str = "", branch: str = "main") -> dict[str, Any]:
+    experiment_mode = "formal_train"
+    return {
+        "schema_version": EXCHANGE_SCHEMA_VERSION,
+        "project_name": project_name_for_mode(experiment_mode),
+        "exchange_repo_url": exchange_url,
+        "branch": branch,
+        "exchange_state": "awaiting_new_round_publish",
+        "current_round_id": None,
+        "current_round_manifest": None,
+        "experiment_mode": experiment_mode,
+        "source_of_truth_repo": "dk0113-Y/DRL-path-finding",
+        "local_execution_repo_path": None,
+        "evaluation_mode": "formal_artifact_review",
+        "decision_zone": "insufficient_evidence",
+        "stop_window_state": {
+            "window_basis": "awaiting_new_round_publish",
+            "comparability_status": "insufficient_evidence",
+            "plateau_detected": False,
+            "hard_stop_triggered": False,
+            "manual_review_required": False,
+            "insufficient_evidence": True,
+            "recommended_action": "analyze_only",
+            "decision_zone": "insufficient_evidence",
+            "reasons": [
+                "exchange_repo_cleared_waiting_for_new_formal_round",
+            ],
+        },
+        "recommended_entry_docs": recommended_entry_docs_for_mode(experiment_mode),
+        "stable_context_files": stable_context_files_for_mode(experiment_mode),
+        "expected_output_file": "next_gpt_decision.json",
+        "exchange_anchor_commit_sha": None,
+        "last_exchange_commit_sha": None,
+        "exchange_anchor_definition": EXCHANGE_ANCHOR_DEFINITION,
+        "notes": [
+            "This exchange repository is in a clean waiting state.",
+            "Publish a new formal round before expecting any round bundle under rounds/.",
+            "`exchange_anchor_commit_sha` records the published bundle commit, not the later CURRENT_ROUND pointer-update commit.",
+            "`last_exchange_commit_sha` is a deprecated compatibility alias for the same anchor when a round is published.",
+        ],
+        "updated_at": get_now_iso(),
+    }
+
+
 def initialize_exchange_repo(exchange_dir: Path) -> None:
     (exchange_dir / "docs").mkdir(parents=True, exist_ok=True)
     (exchange_dir / "rounds").mkdir(parents=True, exist_ok=True)
     (exchange_dir / "outbox").mkdir(parents=True, exist_ok=True)
+    (exchange_dir / "rounds" / ".gitkeep").touch(exist_ok=True)
+    (exchange_dir / "outbox" / ".gitkeep").touch(exist_ok=True)
 
     placeholders = {
         "docs/project_context.md": "# Project Context\n\nPending formal context publication.\n",
@@ -78,6 +125,12 @@ def initialize_exchange_repo(exchange_dir: Path) -> None:
         target_path = exchange_dir / rel_path
         if not target_path.exists():
             target_path.write_text(text, encoding="utf-8")
+    current_round_path = exchange_dir / "CURRENT_ROUND.json"
+    if not current_round_path.exists():
+        current_round_path.write_text(
+            json.dumps(build_empty_current_round(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
 
 def sync_file_to_exchange(source_path: Path, target_dir: Path, target_name: str | None = None) -> Path:
@@ -145,6 +198,7 @@ def build_web_index_message(
             f"- Treat the real training repository artifacts as the only source of truth.\n"
             f"- Do not reuse rehearsal semantics as evidence for formal improvement.\n"
             f"- Check comparability before claiming improvement, regression, plateau, or stopping.\n"
+            f"- Read `CURRENT_ROUND.json.exchange_anchor_commit_sha` as the published bundle anchor commit, not as a self-referential CURRENT_ROUND HEAD sha.\n"
             f"- If evidence is insufficient or comparability failed, keep that explicit in the next decision JSON.\n\n"
             f"Return only one JSON payload wrapped between `DECISION_JSON_BEGIN` and `DECISION_JSON_END`.\n"
         )

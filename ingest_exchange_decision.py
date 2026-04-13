@@ -69,7 +69,10 @@ def main() -> int:
             if current_round_json_path.exists():
                 try:
                     curr = json.loads(current_round_json_path.read_text(encoding="utf-8"))
-                    source_exchange_commit_sha = curr.get("last_exchange_commit_sha", "")
+                    source_exchange_commit_sha = (
+                        curr.get("exchange_anchor_commit_sha")
+                        or curr.get("last_exchange_commit_sha", "")
+                    )
                 except Exception:
                     pass
 

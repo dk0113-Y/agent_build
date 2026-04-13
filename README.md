@@ -56,7 +56,9 @@
   - 优先基于 formal JSON 生成 GPT 输入包
 - `publish_round_to_exchange.py`
   - 发布 round 到 `../RRL_test`
-  - 会同步 `CURRENT_ROUND.json`、`index_manifest.json`、outbox 消息，并写回非空 `last_exchange_commit_sha`
+  - 会同步 `CURRENT_ROUND.json`、`index_manifest.json`、outbox 消息
+  - 发布后会写入 `exchange_anchor_commit_sha`
+  - `last_exchange_commit_sha` 仅作为 deprecated 兼容别名保留
 
 ## formal_train 产物要求
 
@@ -69,6 +71,25 @@ formal round bundle 至少包含：
 - `historical_baseline_summary.json`（若可获得；不足时也会显式标注 `insufficient_history_for_calibration`）
 - `comparability_report.json`
 - `round_summary.json`
+
+## Exchange Anchor 语义
+
+- `exchange_anchor_commit_sha`
+  - 表示本次发布的 bundle anchor commit
+  - 这是第一个真实包含 round bundle 的 exchange commit
+  - 该 commit 必须非空、真实存在、并且从最终 pushed HEAD 可达
+- `last_exchange_commit_sha`
+  - deprecated 兼容字段
+  - 当前与 `exchange_anchor_commit_sha` 保持相同值
+  - 不再表示“包含 CURRENT_ROUND.json 自身的最终 HEAD sha”
+
+这样可以避免 `CURRENT_ROUND.json` 自指：因为 `CURRENT_ROUND.json` 在后续 pointer-update commit 中记录的是前一个已存在的 bundle anchor commit，而不是试图记录自身所在的最终 HEAD。
+
+当前 publish 逻辑也支持从一个已清场的 exchange repo 启动：
+
+- `rounds/` 可以只有 `.gitkeep`
+- `outbox/` 可以只有 `.gitkeep`
+- `CURRENT_ROUND.json` 可以处于 `exchange_state = awaiting_new_round_publish` 的空态
 
 其中：
 
@@ -103,24 +124,24 @@ python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.js
 
 ```bash
 python build_exchange_bundle.py ^
-  --round-id round_0023 ^
+  --round-id round_xxxx ^
   --run-dir ../代码1/outputs/<run_name> ^
   --baseline-run-dir ../代码1/outputs/<baseline_run_name> ^
-  --baseline-round-id round_0022 ^
+  --baseline-round-id round_xxxx ^
   --force
 ```
 
 ### 3. 生成 GPT 输入包
 
 ```bash
-python prepare_gpt_input.py --round-id round_0023
+python prepare_gpt_input.py --round-id round_xxxx
 ```
 
 ### 4. 发布到交换仓库
 
 ```bash
 python publish_round_to_exchange.py ^
-  --round-id round_0023 ^
+  --round-id round_xxxx ^
   --exchange-repo-dir ../RRL_test ^
   --repo-url https://github.com/dk0113-Y/RRL_test ^
   --branch main ^

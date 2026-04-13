@@ -13,8 +13,8 @@ DECISION_JSON_BEGIN
   "decision_status": "pause_for_manual_review",
   "evaluation_mode": "formal_artifact_review",
   "comparability_group": "formal_mainline_v1__example",
-  "baseline_round_id": "round_0021",
-  "baseline_commit_sha": "abc123",
+  "baseline_round_id": null,
+  "baseline_commit_sha": null,
   "decision_zone": "manual_review_required",
   "stop_window_state": {
     "recommended_action": "pause_for_manual_review",
