@@ -1664,6 +1664,9 @@ def main() -> int:
         # file-first status fields directly — no more slim 5-field dict.
         _FILE_FIRST_FIELDS = [
             "success", "status", "message", "reply_text",
+            "send_delivery_state", "send_ui_confirmation_state",
+            "send_ui_confirmation_reason", "send_evidence_tier",
+            "send_meta",
             "send_confirmed", "send_confirm_reason",
             "send_confirmation_status", "send_confirmation_reason",
             "report_path",
