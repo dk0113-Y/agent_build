@@ -168,7 +168,10 @@ def main():
             codex_report_nonempty = False
             codex_report_ready = False
             codex_report_ready_reason = ""
-            codex_send_confirmed = False
+            codex_send_delivery_state = ""
+            codex_send_ui_confirmation_state = ""
+            codex_send_ui_confirmation_reason = ""
+            codex_send_confirmed_final = False
             codex_send_confirm_reason = ""
             codex_report_updated_after_send = False
             codex_ui_candidate_rejected = False
@@ -183,8 +186,11 @@ def main():
                     run_log["codex_bridge_status"] = b_data.get("status", "")
                     bridge_success = bool(b_data.get("success", False))
                     # Read diagnostic fields propagated from demo_codex_bridge
-                    codex_send_confirmed = bool(b_data.get("send_confirmed", False))
-                    codex_send_confirm_reason = b_data.get("send_confirm_reason", "")
+                    codex_send_delivery_state = b_data.get("send_delivery_state", "")
+                    codex_send_ui_confirmation_state = b_data.get("send_ui_confirmation_state", "")
+                    codex_send_ui_confirmation_reason = b_data.get("send_ui_confirmation_reason", "")
+                    codex_send_confirmed_final = bool(b_data.get("send_confirmed", False))
+                    codex_send_confirm_reason = b_data.get("send_confirm_reason", b_data.get("send_confirmation_reason", ""))
                     codex_report_updated_after_send = bool(b_data.get("report_updated_after_send", False))
                     codex_ui_candidate_rejected = bool(b_data.get("ui_candidate_rejected", False))
                     codex_ui_candidate_reject_reason = b_data.get("ui_candidate_reject_reason", "")
@@ -202,7 +208,15 @@ def main():
             elif not bridge_success:
                 # Discriminate sub-reason: send_not_confirmed is more specific than generic failure
                 b_status = b_data.get("status", "") if bridge_out_json.exists() else ""
-                if not codex_send_confirmed or b_status in ("send_not_confirmed",) or "send_not_confirmed" in b_status:
+                delivery_state = b_data.get("send_delivery_state", "")
+                
+                if delivery_state == "failed":
+                    reason_msg = b_data.get("send_ui_confirmation_reason") or codex_send_confirm_reason or b_status
+                    codex_gate_reason = f"codex_send_failed: {reason_msg}"
+                elif delivery_state == "pending_artifact_confirmation":
+                    reason_msg = b_data.get("send_ui_confirmation_reason") or codex_send_confirm_reason or b_status
+                    codex_gate_reason = f"codex_send_not_confirmed_by_ui_and_no_artifact: {reason_msg}"
+                elif not codex_send_confirmed_final or b_status in ("send_not_confirmed",) or "send_not_confirmed" in b_status:
                     codex_gate_reason = f"codex_send_not_confirmed: {codex_send_confirm_reason or b_status}"
                 else:
                     codex_gate_reason = "codex_bridge_returned_failure"
@@ -234,7 +248,12 @@ def main():
             run_log["codex_output_gate_reason"] = codex_gate_reason
             run_log["codex_report_ready"] = codex_report_ready
             run_log["codex_report_ready_reason"] = codex_report_ready_reason
-            run_log["codex_send_confirmed"] = codex_send_confirmed
+            run_log["codex_send_delivery_state"] = codex_send_delivery_state
+            run_log["codex_send_ui_confirmation_state"] = codex_send_ui_confirmation_state
+            run_log["codex_send_ui_confirmation_reason"] = codex_send_ui_confirmation_reason
+            run_log["codex_send_confirmed_final"] = codex_send_confirmed_final
+            # Keep legacy field for compatibility but ensure it traces final state
+            run_log["codex_send_confirmed"] = codex_send_confirmed_final
             run_log["codex_send_confirm_reason"] = codex_send_confirm_reason
             run_log["codex_report_updated_after_send"] = codex_report_updated_after_send
             run_log["codex_ui_candidate_rejected"] = codex_ui_candidate_rejected

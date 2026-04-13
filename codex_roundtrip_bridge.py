@@ -122,14 +122,16 @@ def main():
             print("STDOUT:", res.stdout[-2000:])
 
         # --- Read output_json for primary status and diagnostics ---
-        bridge_send_confirmed = True  # assume OK unless we see otherwise
+        bridge_send_delivery_state = "confirmed_by_artifact"  # assume OK unless seen otherwise
+        bridge_send_ui_state = ""
         bridge_send_status = ""
         bridge_send_reason = ""
         ui_transcript = ""
         if output_json.exists():
             try:
                 out_data = json.loads(output_json.read_text("utf-8"))
-                bridge_send_confirmed = bool(out_data.get("send_confirmed", True))
+                bridge_send_delivery_state = out_data.get("send_delivery_state", "confirmed_by_artifact")
+                bridge_send_ui_state = out_data.get("send_ui_confirmation_state", "")
                 bridge_send_status = out_data.get("send_confirmation_status", out_data.get("status", ""))
                 bridge_send_reason = out_data.get("send_confirmation_reason", out_data.get("send_confirm_reason", ""))
                 ui_transcript = out_data.get("ui_candidate_reply_text", "") or out_data.get("reply_text", "")
@@ -151,12 +153,17 @@ def main():
             _time.sleep(1)
 
         if gate_passed:
-            print(f"File gate passed. Report at {args.report.name}")
+            diag_msg = ""
+            if bridge_send_ui_state == "unconfirmed":
+                diag_msg = " [Diagnostic: UI did not confirm delivery, but artifact confirmation succeeded]"
+            print(f"File gate passed. Report at {args.report.name}{diag_msg}")
             return 0
         else:
-            # Preserve send_not_confirmed as primary failure reason if send was not confirmed.
-            if not bridge_send_confirmed and bridge_send_status:
-                failure_reason = f"send_not_confirmed: {bridge_send_reason or bridge_send_status}"
+            # Preserve send failure as primary failure reason if delivery state failed or pended without file
+            if bridge_send_delivery_state == "failed":
+                failure_reason = f"send_failed: {bridge_send_reason or bridge_send_status}"
+            elif bridge_send_delivery_state == "pending_artifact_confirmation":
+                failure_reason = f"send_not_confirmed_by_ui_and_no_artifact: {bridge_send_reason or bridge_send_status}"
             else:
                 failure_reason = gate_reason
             print(f"File gate failed: {gate_reason} | primary_failure_reason: {failure_reason}")

@@ -848,11 +848,11 @@ class CodexBridge:
         elif not self._is_send_button_unavailable(last_send_button):
             reason = (
                 "Message probe did not show a new visible instance and the send button remained "
-                "available after all send attempts and observation window. "
+                "available after single-send observation window. "
                 "Composer was cleared but no other confirmation signal appeared."
             )
         elif last_count < baseline_count + 1:
-            reason = "Message probe never appeared in visible Codex text after all send attempts."
+            reason = "Message probe never appeared in visible Codex text after single send."
         else:
             reason = "Message probe did not show a new visible instance beyond the pre-send state."
 
@@ -1379,20 +1379,24 @@ def run_send_or_demo(
                     report_started_at=send_started_at,
                 )
                 payload["message_probe_post_send_count"] = confirmation["message_probe_post_send_count"]
-                payload["send_confirmation_status"] = confirmation["status"]
-                payload["send_confirmation_reason"] = confirmation["reason"]
-                payload["send_confirmed"] = bool(confirmation["success"])
-                payload["send_confirm_reason"] = confirmation["reason"]
+                
+                ui_confirmed = confirmation["success"]
+                payload["send_ui_confirmation_state"] = "confirmed" if ui_confirmed else "unconfirmed"
+                payload["send_ui_confirmation_reason"] = confirmation["reason"]
                 payload["send_evidence_tier"] = confirmation.get("evidence_tier", "")
 
-                if confirmation["success"]:
-                    print(f"Send confirmed: {confirmation['status']} (tier={confirmation.get('evidence_tier','')})")
+                if ui_confirmed:
+                    payload["send_delivery_state"] = "confirmed_by_ui"
+                    payload["send_confirmation_status"] = confirmation["status"]
+                    payload["send_confirmed"] = True
+                    print(f"Send ui-confirmed: {confirmation['status']} (tier={confirmation.get('evidence_tier','')})")
                 else:
-                    print(f"Send confirmation failed: {confirmation['reason']}")
-                    # Do NOT early-exit here when report_path is provided —
-                    # allow file-first wait to determine if Codex actually received the message.
-                    # Only hard-exit if there is no report_path to observe.
+                    print(f"Send ui-unconfirmed: {confirmation['reason']}")
                     if report_path is None:
+                        payload["send_delivery_state"] = "failed"
+                        payload["send_confirmation_status"] = "send_not_confirmed"
+                        payload["send_confirmed"] = False
+                        
                         payload["status"] = "send_not_confirmed"
                         payload["success"] = False
                         payload["message"] = f"Send not confirmed: {confirmation['reason']}"
@@ -1402,15 +1406,20 @@ def run_send_or_demo(
                             sent_prompt=prompt, message_probe=message_probe,
                             sent_message_source=sent_message_source,
                             message_path=message_path,
-                            send_confirmation_status=confirmation["status"],
+                            send_confirmation_status=payload["send_confirmation_status"],
                             send_confirmation_reason=confirmation["reason"],
                         )
-                    # With report_path: proceed to file-first wait even on weak/failed confirm.
-                    # The file-first result will be the authoritative verdict.
-                    print("[send-and-wait] Proceeding to file-first wait despite weak send confirmation.")
+                    else:
+                        print("[send-and-wait] Proceeding to file-first wait despite ui unconfirmed.")
+                        payload["send_delivery_state"] = "pending_artifact_confirmation"
+                        payload["send_confirmation_status"] = "ui_unconfirmed_waiting_for_artifact"
+                        payload["send_confirmed"] = False  # Legacy compat false, but we keep waiting
             else:
+                payload["send_ui_confirmation_state"] = "not_applicable"
+                payload["send_delivery_state"] = "confirmed_by_ui"
                 payload["send_confirmed"] = True
-                payload["send_confirm_reason"] = "no_probe_required"
+                payload["send_confirmation_status"] = "no_probe_required"
+                payload["send_confirmation_reason"] = "no_probe_required"
 
             # Step B: File-first — wait for report file to be written and ready
             if report_path is not None:
@@ -1461,6 +1470,13 @@ def run_send_or_demo(
                     payload["status"] = "report_file_ready"
                     payload["message"] = f"Codex report file verified ready: {report_path}"
                     payload["reply_text"] = ""  # not from UI
+                    
+                    # Backfill send state since file confirmed receipt
+                    payload["send_delivery_state"] = "confirmed_by_artifact"
+                    payload["send_confirmed"] = True
+                    payload["send_confirmation_status"] = "confirmed_by_artifact"
+                    payload["send_confirmation_reason"] = "codex_report.md was updated and passed readiness, so delivery is confirmed by artifact."
+                    
                     write_log(log_path, payload)
                     return DemoResult(
                         True, "report_file_ready", payload["message"], log_path,
@@ -1474,13 +1490,12 @@ def run_send_or_demo(
                         ui_candidate_reject_reason=payload.get("ui_candidate_reject_reason", ""),
                     )
                 else:
-                    # If send was never confirmed, prefer send_not_confirmed as primary status
-                    send_was_confirmed = bool(payload.get("send_confirmed", True))
-                    if not send_was_confirmed:
+                    if payload.get("send_delivery_state") == "pending_artifact_confirmation":
+                        payload["send_delivery_state"] = "failed"
                         primary_status = "send_not_confirmed"
                         primary_message = (
-                            f"Send not confirmed and report file never appeared. "
-                            f"Send reason: {payload.get('send_confirm_reason', '')}. "
+                            f"Send not confirmed by UI and report file never appeared. "
+                            f"UI Reason: {payload.get('send_ui_confirmation_reason', '')}. "
                             f"File reason: {file_reason}"
                         )
                     else:
