@@ -32,8 +32,37 @@ def generate_mock_report(request_path: Path) -> str:
         "Detailed evaluations confirm progress toward generalized performance."
     )
 
+def _extract_round_id(report_path: Path) -> str:
+    """Best-effort extraction of round_id from the report's parent directory."""
+    try:
+        return report_path.resolve().parent.name
+    except Exception:
+        return "round_xxxx"
+
+def _write_raw_reply_snapshot(output_json: Path, reply_text: str) -> None:
+    """Save raw reply alongside output_json for debugging."""
+    try:
+        # Derive tmp dir from output_json location
+        tmp_dir = output_json.parent
+        # Extract round suffix from output_json name e.g. codex_bridge_out_round_0002.json
+        stem = output_json.stem  # codex_bridge_out_round_0002
+        parts = stem.split("_out_")
+        suffix = parts[1] if len(parts) > 1 else stem
+        snapshot_path = tmp_dir / f"codex_bridge_raw_reply_{suffix}.md"
+        snapshot_path.write_text(reply_text, encoding="utf-8")
+        print(f"Raw reply snapshot: {snapshot_path}")
+    except Exception as e:
+        print(f"Warning: could not write raw reply snapshot: {e}")
+
 def _artifact_gate(output_json: Path, report: Path, expect_substring: str | None) -> tuple[bool, str]:
-    """Validate real output artifacts after bridge subprocess exits. Returns (passed, reason)."""
+    """
+    Validate real output artifacts after bridge subprocess exits.
+    Returns (passed, reason).
+
+    NOTE: This gate intentionally does NOT check codex_report_is_ready() because
+    the write step happens inside this polling loop. The ready check happens
+    *after* write in main().
+    """
     if not output_json.exists():
         return False, "bridge_exited_without_output_json"
     try:
@@ -42,18 +71,37 @@ def _artifact_gate(output_json: Path, report: Path, expect_substring: str | None
         return False, f"bridge_output_json_invalid: {e}"
     if not data.get("success"):
         return False, "bridge_output_json_success_false"
-    if not data.get("reply_text", "").strip():
+    reply_text = data.get("reply_text", "").strip()
+    if not reply_text:
         return False, "bridge_output_json_reply_text_empty"
     if expect_substring and not data.get("reply_matches_expectation", False):
         return False, "bridge_content_expectation_mismatch"
-    if not report.exists() or not report.read_text("utf-8").strip():
-        return False, "report_not_written_or_empty"
+    # Write reply_text -> report (overwrite, guaranteeing same-source)
+    try:
+        report.write_text(reply_text, encoding="utf-8")
+    except Exception as e:
+        return False, f"report_write_failed: {e}"
+    # Verify the write landed correctly
+    try:
+        on_disk = report.read_text("utf-8").strip()
+    except Exception as e:
+        return False, f"report_read_back_failed: {e}"
+    if on_disk != reply_text:
+        return False, "report_reply_mismatch"
     return True, "ok"
 
 
 def main():
     args = parse_args()
     
+    # --- Pre-run: clear any stale/old report so it cannot satisfy the gate ---
+    if args.report.exists():
+        try:
+            args.report.unlink()
+            print(f"Cleared stale report: {args.report}")
+        except Exception as e:
+            print(f"Warning: could not clear stale report {args.report}: {e}", file=sys.stderr)
+
     print("Executing demo_codex_bridge.py for UI automation in send-and-wait mode...")
     bridge_script = Path(__file__).parent / "demo_codex_bridge.py"
     output_json = args.output_json if args.output_json else Path(__file__).parent / "tmp" / "codex_bridge_out.json"
@@ -83,21 +131,37 @@ def main():
             gate_passed, gate_reason = _artifact_gate(output_json, args.report, args.expect_substring)
             if gate_passed:
                 break
-            # If report written by bridge already, don't wait out full 15s
-            if output_json.exists():
-                try:
-                    d = json.loads(output_json.read_text("utf-8"))
-                    if d.get("success") and d.get("reply_text"):
-                        args.report.write_text(d["reply_text"], "utf-8")
-                except Exception:
-                    pass
             _time.sleep(1)
         
+        if gate_passed:
+            # Gate passed: report has been written from reply_text.
+            # Now save raw reply snapshot for diagnostics.
+            try:
+                d = json.loads(output_json.read_text("utf-8"))
+                _write_raw_reply_snapshot(output_json, d.get("reply_text", ""))
+            except Exception:
+                pass
+
+            # Semantic readiness check via codex_report_is_ready()
+            try:
+                from automation_protocol import codex_report_is_ready
+                report_text = args.report.read_text("utf-8")
+                round_id = _extract_round_id(args.report)
+                ready, ready_reason = codex_report_is_ready(round_id, report_text)
+                if not ready:
+                    failure_reason = f"codex_report_not_ready: {ready_reason}"
+                    print(f"Artifact gate passed but report semantics failed: {failure_reason}")
+                    gate_passed = False
+            except Exception as e:
+                # codex_report_is_ready not available or raised; log but don't fail hard
+                print(f"Warning: could not run codex_report_is_ready(): {e}")
+
         if gate_passed:
             print(f"Artifact gate passed. Report written to {args.report.name}")
             return 0
         else:
-            failure_reason = gate_reason
+            if not failure_reason:
+                failure_reason = gate_reason
             print(f"Artifact gate failed: {failure_reason}")
             print("STDOUT:", res.stdout[-2000:] if res.stdout else "")
             print("STDERR:", res.stderr[-2000:] if res.stderr else "")
