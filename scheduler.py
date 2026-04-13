@@ -115,7 +115,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep-sec", type=float, default=0.35)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--poll-sec", type=float, default=0.5)
-    parser.add_argument("--run-dir-timeout-sec", type=float, default=20.0)
+    parser.add_argument("--run-dir-timeout-sec", type=float, default=300.0)
+    parser.add_argument("--training-no-progress-timeout-sec", type=float, default=2400.0, help="Fail if no artifact updates in this time.")
+    parser.add_argument("--training-hard-timeout-sec", type=float, default=0.0, help="Fail if wall clock exceeds this time.")
     parser.add_argument("--invoke-codex-bridge", action="store_true", help="After a successful decision-driven run, send codex_request.md to the local Codex app.")
     parser.add_argument("--bridge-config", type=Path, default=repo_root() / "config_new_thread.json", help="Config file to use when invoking demo_codex_bridge.py.")
     parser.add_argument("--bridge-manual-confirm-send", action="store_true", help="Pass --manual-confirm-send to demo_codex_bridge.py when bridge invocation is enabled.")
@@ -245,11 +247,54 @@ def wait_for_new_run_dir(
     return None
 
 
-def wait_for_process_exit(process: subprocess.Popen[bytes], poll_sec: float) -> int:
+def wait_for_process_exit(process: subprocess.Popen[bytes], poll_sec: float, run_dir: Path | None = None, no_progress_timeout: float = 0, hard_timeout: float = 0) -> tuple[int | None, str]:
+    start_time = time.time()
+    last_heartbeat = start_time
+
+    def get_latest_mtime() -> tuple[float, str]:
+        if not run_dir:
+            return start_time, ""
+        latest = start_time
+        updated_file = ""
+        for relative_path in [
+            "logs/train_steps.csv", "logs/train_episodes.csv", "logs/eval_metrics.csv", "logs/final_probe.csv",
+            "checkpoints/best.pt", "checkpoints/last.pt"
+        ]:
+            p = run_dir / relative_path
+            if p.exists():
+                mtime = p.stat().st_mtime
+                if mtime > latest:
+                    latest = mtime
+                    updated_file = relative_path
+        return latest, updated_file
+
     while True:
         return_code = process.poll()
         if return_code is not None:
-            return return_code
+            return return_code, "exited"
+
+        now = time.time()
+        elapsed = now - start_time
+        
+        # Hard timeout check
+        if hard_timeout > 0 and elapsed > hard_timeout:
+            process.terminate()
+            return None, "training_hard_timeout"
+
+        # No progress timeout check
+        latest_mtime, latest_file = get_latest_mtime()
+        no_progress_duration = now - latest_mtime
+        if no_progress_timeout > 0 and no_progress_duration > no_progress_timeout:
+            process.terminate()
+            return None, "training_no_progress_timeout"
+
+        # Heartbeat every 60s
+        if now - last_heartbeat >= 60.0:
+            print(f"[Heartbeat] Training running for {elapsed/60:.1f}m. " 
+                  f"Idle since last artifact update: {no_progress_duration/60:.1f}m. "
+                  f"Latest file: {latest_file if latest_file else 'None'}", flush=True)
+            last_heartbeat = now
+
         time.sleep(poll_sec)
 
 
@@ -517,7 +562,8 @@ def main() -> int:
         poll_sec=args.poll_sec,
     )
     if run_dir is None:
-        return_code = wait_for_process_exit(process, args.poll_sec)
+        process.terminate()
+        return_code = process.poll()
         bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
         if round_state_file is not None:
             update_round_state_file(
@@ -550,14 +596,21 @@ def main() -> int:
     )
 
     print("status=waiting_for_process_exit", flush=True)
-    return_code = wait_for_process_exit(process, args.poll_sec)
+    return_code, timeout_reason = wait_for_process_exit(process, args.poll_sec, run_dir, args.training_no_progress_timeout_sec, args.training_hard_timeout_sec)
 
     print("status=validating_artifacts", flush=True)
     validation = validate_run_artifacts(run_dir)
-    success = return_code == 0 and validation.success
+    success = return_code == 0 and validation.success and (timeout_reason == "exited")
+    
+    missing_items = list(validation.missing_items) if validation.missing_items else []
+    if timeout_reason != "exited":
+        missing_items.append(timeout_reason)
+        
+    final_status = "success" if success else timeout_reason if timeout_reason != "exited" else "failed"
+
     sync_round_state(
         context,
-        status="success" if success else "failed",
+        status=final_status,
         run_dir=run_dir,
         training_return_code=return_code,
         bridge_result=BridgeInvocationResult(False, "not_invoked", None),
@@ -592,7 +645,7 @@ def main() -> int:
     if round_state_file is not None:
         update_round_state_file(
             round_state_file,
-            status="success" if success else "failed",
+            status=final_status,
             run_dir=run_dir,
             training_return_code=return_code,
             bridge_invoked=bridge_result.invoked,
@@ -600,11 +653,11 @@ def main() -> int:
         )
 
     emit_terminal_summary(
-        status="success" if success else "failed",
+        status=final_status,
         round_dir=context.round_dir,
         run_dir=run_dir,
         return_code=return_code,
-        missing_artifacts=validation.missing_items if validation.missing_items else [],
+        missing_artifacts=missing_items,
         codex_request_path=generated_request_path if generated_request_path is not None else codex_request_path,
         bridge_result=bridge_result,
     )

@@ -48,6 +48,7 @@ class IndexManifest:
     task_type: str
     stable_context_files: list[str]
     round_files: list[str]
+    artifact_hashes: dict[str, str]
     expected_output_file: str
     notes: str
 
@@ -61,6 +62,7 @@ class CurrentRound:
     current_round_manifest: str
     recommended_entry_docs: list[str]
     expected_output_file: str
+    last_exchange_commit_sha: str
     updated_at: str
 
 

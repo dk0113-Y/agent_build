@@ -90,7 +90,24 @@ def main():
             print(f"\n=== Starting Rehearsal Round {i+1}/{args.max_rounds}: {current_round_id} ===")
             round_dir = rounds_dir / current_round_id
             decision_file = round_dir / "gpt_decision.json"
-            
+            if decision_file.exists():
+                decision_data = json.loads(decision_file.read_text("utf-8"))
+                decision_status = decision_data.get("decision_status", "run_next_round")
+                if decision_status == "stop_experiment":
+                    summary["stop_reason"] = "gpt_requested_stop"
+                    summary["success"] = True
+                    print("GPT requested to stop the experiment. Halting controller gracefully.")
+                    break
+                elif decision_status == "pause_for_manual_review":
+                    summary["stop_reason"] = "gpt_requested_manual_review"
+                    summary["success"] = True
+                    print("GPT requested pause for manual review. Halting controller gracefully.")
+                    break
+                elif decision_status == "analyze_only":
+                    summary["stop_reason"] = "analyze_only_not_supported_in_main_loop"
+                    print("analyze_only is not supported by this rehearsal loop. Halting.")
+                    break
+
             # Step 2: scheduler
             print("=> Running scheduler...")
             res = subprocess.run([sys.executable, "scheduler.py", "--decision-file", str(decision_file)])
@@ -108,7 +125,7 @@ def main():
             
             # Check oracle
             truth_file = run_dir / "synthetic_truth.json"
-            truth = json.loads(truth_file.read_text("utf-8"))
+            truth = json.loads(truth_file.read_text("utf-8")) if truth_file.exists() else {}
             decision_data = json.loads(decision_file.read_text("utf-8"))
             
             run_log = {

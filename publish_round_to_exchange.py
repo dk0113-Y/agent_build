@@ -4,6 +4,7 @@ CLI to publish a local round to the GitHub exchange repository.
 """
 
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
@@ -97,6 +98,7 @@ def main() -> int:
         target_round_dir.mkdir(parents=True, exist_ok=True)
 
         exported_files = []
+        artifact_hashes = {}
         for f in required_files + ([GPT_INPUT_FILENAME] if (local_round_dir / GPT_INPUT_FILENAME).exists() else []):
             local_path = local_round_dir / f
             # Only export gpt_input.md if it's not a placeholder
@@ -107,6 +109,10 @@ def main() -> int:
             
             sync_file_to_exchange(local_path, target_round_dir)
             exported_files.append(f"rounds/{round_id}/{f}")
+            
+            hasher = hashlib.sha256()
+            hasher.update(local_path.read_bytes())
+            artifact_hashes[f] = hasher.hexdigest()
 
         # 4. Generate metadata
         decision_payload = read_json_file(local_round_dir / "gpt_decision.json")
@@ -118,12 +124,17 @@ def main() -> int:
         write_json_file(summary_path, asdict(summary))
         exported_files.append(f"rounds/{round_id}/round_summary.json")
 
+        summary_hasher = hashlib.sha256()
+        summary_hasher.update(summary_path.read_bytes())
+        artifact_hashes["round_summary.json"] = summary_hasher.hexdigest()
+
         manifest = IndexManifest(
             schema_version=EXCHANGE_SCHEMA_VERSION,
             round_id=round_id,
             task_type="experiment_analysis",
             stable_context_files=["docs/project_context.md", "docs/automation_scope.md", "docs/tuning_policy.md"],
             round_files=exported_files,
+            artifact_hashes=artifact_hashes,
             expected_output_file="next_gpt_decision.json",
             notes=decision_payload.get("controller_notes", "")
         )
@@ -140,6 +151,7 @@ def main() -> int:
             current_round_manifest=f"rounds/{round_id}/index_manifest.json",
             recommended_entry_docs=["docs/project_context.md", "docs/automation_scope.md"],
             expected_output_file="next_gpt_decision.json",
+            last_exchange_commit_sha="",
             updated_at=get_now_iso()
         )
         write_json_file(exchange_dir / "CURRENT_ROUND.json", asdict(current_round))
@@ -166,7 +178,7 @@ def main() -> int:
         print(f"Manifest: {manifest_path.relative_to(exchange_dir)}")
         print(f"Index Message: {msg_path.relative_to(exchange_dir)}")
 
-        # 7. Git operations
+        commit_sha = ""
         if args.commit:
             print("Committing changes...")
             run_git_command(exchange_dir, ["add", "."])
@@ -182,8 +194,17 @@ def main() -> int:
                 if args.push:
                     print("Pushing to remote...")
                     run_git_command(exchange_dir, ["push", "origin", args.branch])
+            
+            rev_res = run_git_command(exchange_dir, ["rev-parse", "HEAD"])
+            commit_sha = rev_res.stdout.strip()
+            
+            # Update local round state with the lineage of where it went
+            from automation_protocol import update_round_state_file
+            update_round_state_file(local_round_dir / "round_state.json", source_exchange_commit_sha=commit_sha)
 
         print("status=success")
+        if commit_sha:
+            print(f"commit_sha={commit_sha}")
         return 0
 
     except ProtocolError as e:

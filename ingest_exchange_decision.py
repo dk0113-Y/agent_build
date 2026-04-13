@@ -4,6 +4,7 @@ CLI to ingest a GPT decision from the exchange workflow into a local round.
 """
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -40,12 +41,53 @@ def main() -> int:
         payload = read_json_file(args.input_file)
         source_round_id = normalize_round_id(args.source_round_id)
 
+        # Hash computation
+        hasher = hashlib.sha256()
+        hasher.update(args.input_file.read_bytes())
+        decision_sha256 = hasher.hexdigest()
+        
+        exchange_decision_sha256 = ""
+        source_exchange_commit_sha = ""
+        
+        if args.exchange_repo_dir:
+            exchange_rounds_dir = args.exchange_repo_dir.resolve() / "rounds" / source_round_id
+            exchange_decision_file = exchange_rounds_dir / "next_gpt_decision.json"
+            if exchange_decision_file.exists():
+                ex_hasher = hashlib.sha256()
+                ex_hasher.update(exchange_decision_file.read_bytes())
+                exchange_decision_sha256 = ex_hasher.hexdigest()
+                
+                if exchange_decision_sha256 != decision_sha256 and not args.force:
+                    raise ProtocolError(
+                        f"Consistency error: The local input file hash ({decision_sha256}) "
+                        f"does NOT match the exchange repo next_gpt_decision.json hash ({exchange_decision_sha256}). "
+                        f"Use --force to ingest anyway."
+                    )
+            
+            # Extract commit SHA if we can
+            current_round_json_path = args.exchange_repo_dir.resolve() / "CURRENT_ROUND.json"
+            if current_round_json_path.exists():
+                try:
+                    curr = json.loads(current_round_json_path.read_text(encoding="utf-8"))
+                    source_exchange_commit_sha = curr.get("last_exchange_commit_sha", "")
+                except Exception:
+                    pass
+
         # 2. Perform ingestion
         target_id, round_dir = ingest_decision_payload(
             payload=payload,
             target_round_id=args.target_round_id,
             source_round_id=source_round_id,
             force=args.force
+        )
+        
+        # 2.5 Decorate new round state with extensive lineage
+        from automation_protocol import update_round_state_file
+        update_round_state_file(
+            round_dir / "round_state.json",
+            source_decision_sha256=decision_sha256,
+            source_exchange_decision_sha256=exchange_decision_sha256,
+            source_exchange_commit_sha=source_exchange_commit_sha,
         )
 
         print(f"status=ingested")

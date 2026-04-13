@@ -92,6 +92,9 @@ class RoundState:
     bridge_invoked: bool
     bridge_status: str
     source_round_id: str = ""
+    source_decision_sha256: str = ""
+    source_exchange_decision_sha256: str = ""
+    source_exchange_commit_sha: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -411,6 +414,9 @@ def build_round_state(
         bridge_invoked=False,
         bridge_status="not_invoked",
         source_round_id="",
+        source_decision_sha256="",
+        source_exchange_decision_sha256="",
+        source_exchange_commit_sha="",
         created_at=timestamp,
         updated_at=timestamp,
     )
@@ -430,6 +436,9 @@ def round_state_to_dict(state: RoundState) -> dict[str, Any]:
         "bridge_invoked": state.bridge_invoked,
         "bridge_status": state.bridge_status,
         "source_round_id": state.source_round_id,
+        "source_decision_sha256": state.source_decision_sha256,
+        "source_exchange_decision_sha256": state.source_exchange_decision_sha256,
+        "source_exchange_commit_sha": state.source_exchange_commit_sha,
         "created_at": state.created_at,
         "updated_at": state.updated_at,
     }
@@ -465,6 +474,9 @@ def load_round_state_file(path: Path) -> RoundState:
         bridge_invoked=bridge_invoked,
         bridge_status=_require_string(payload, "bridge_status"),
         source_round_id=str(payload.get("source_round_id", "")).strip(),
+        source_decision_sha256=str(payload.get("source_decision_sha256", "")).strip(),
+        source_exchange_decision_sha256=str(payload.get("source_exchange_decision_sha256", "")).strip(),
+        source_exchange_commit_sha=str(payload.get("source_exchange_commit_sha", "")).strip(),
         created_at=_require_string(payload, "created_at"),
         updated_at=_require_string(payload, "updated_at"),
     )
@@ -499,7 +511,7 @@ def update_round_state_file(path: Path, **changes: Any) -> RoundState:
     for key, value in changes.items():
         if not hasattr(state, key):
             raise ProtocolError(f"Unknown round_state field '{key}'.")
-        if key in {"decision_file", "codex_request_path", "codex_report_path", "gpt_input_path", "run_dir"}:
+        if key in {"decision_file", "codex_request_path", "codex_report_path", "gpt_input_path", "run_dir", "source_round_id", "source_decision_sha256", "source_exchange_decision_sha256", "source_exchange_commit_sha", "bridge_status"}:
             if value is None:
                 value = ""
             elif isinstance(value, Path):
