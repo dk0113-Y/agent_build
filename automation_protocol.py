@@ -645,7 +645,41 @@ def codex_report_is_ready(round_id: str, report_text: str) -> tuple[bool, str]:
             "codex_report.md still contains unfilled template placeholders: "
             + ", ".join(deduped[:5])
         )
+
+    # --- Minimum content validity check ---
+    # A genuine Codex analysis report must have at least some structural markers.
+    # Short freeform responses like "要求后续变更" must be rejected here.
+    DOMAIN_KEYWORDS = {
+        "turn_penalty", "revisit_penalty", "entry_k",
+        "reward", "coverage", "success rate", "turn penalty", "revisit penalty",
+        "recommended", "observation", "analysis", "parameter", "penalty",
+        "training", "steps", "performance", "metric", "loss", "episode",
+    }
+    MIN_CHARS = 150  # characters: a genuine report will far exceed this
+
+    has_heading = any(
+        line.strip().startswith("#") for line in lines if line.strip()
+    )
+    has_bullet_list = sum(
+        1 for line in lines if line.strip().startswith(("- ", "* "))
+    ) >= 3
+    lower_text = stripped_report.lower()
+    domain_keyword_count = sum(1 for kw in DOMAIN_KEYWORDS if kw in lower_text)
+
+    is_structurally_valid = (
+        len(stripped_report) >= MIN_CHARS
+        and (has_heading or has_bullet_list or domain_keyword_count >= 2)
+    )
+
+    if not is_structurally_valid:
+        return False, (
+            "codex_report.md is too short or lacks structured analysis content. "
+            f"(chars={len(stripped_report)}, has_heading={has_heading}, "
+            f"has_bullet_list={has_bullet_list}, domain_keywords_found={domain_keyword_count})"
+        )
+
     return True, ""
+
 
 
 def resolve_compare_targets(decision: GPTDecision, current_round_id: str) -> list[ResolvedCompareTarget]:
