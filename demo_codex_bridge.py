@@ -396,12 +396,19 @@ class CodexBridge:
         manual_confirm_send: bool = False,
         message_probe: str | None = None,
     ) -> dict[str, Any]:
-        """Send prompt with up to 3 attempts, alternating method on retry."""
+        """Send prompt exactly once, then observe for confirmation signals.
+
+        No automatic retry / re-send is performed.  If no confirmation signal
+        appears within the post-send observation window the function still
+        returns \u2014 the caller's confirm_message_delivery() will make the final
+        verdict.  This preserves idempotency: the same prompt is never
+        submitted to Codex more than once per round.
+        """
         assert self.window is not None
-        max_attempts = int(self.config.get("send_max_attempts", 3))
-        retry_wait_sec = float(self.config.get("send_retry_wait_sec", 3.0))
         base_send_method = self.config.get("send_method", "button")
-        alt_send_method = "enter" if base_send_method == "button" else "button"
+        # How long to observe after the single send before returning
+        observe_sec = float(self.config.get("send_post_send_observe_sec", 12.0))
+        poll_sec = float(self.config.get("send_confirmation_poll_sec", 0.5))
 
         self.activate()
         self.maybe_scroll_to_bottom()
@@ -418,102 +425,67 @@ class CodexBridge:
         if manual_confirm_send:
             input("Prompt is pasted. Press Enter here to continue with send...")
 
-        attempts_log: list[dict[str, Any]] = []
+        # ── Single physical send ──────────────────────────────────────────────
+        send_btn_summary_before = self._ctrl_summary(send_button)
+        actual_method = self._try_click_send(base_send_method, send_button)
+        time.sleep(self.config["after_send_wait_sec"])
+        print(f"[send] Single send executed via method={actual_method}")
 
-        for attempt_idx in range(max_attempts):
-            # Choose method: first attempt uses config, subsequent attempts alternate
-            if attempt_idx == 0:
-                method = base_send_method
-            elif attempt_idx % 2 == 1:
-                method = alt_send_method
-            else:
-                method = base_send_method
+        # ── Post-send observation window ──────────────────────────────────────
+        # We observe for early confirmation signals (probe count / button state)
+        # but do NOT re-send under any circumstances.
+        early_confirmed = False
+        obs_deadline = time.time() + observe_sec
+        post_send_probe_count = None
+        post_send_visible = None
+        send_btn_after = None
 
-            # Refresh send button on retries
-            if attempt_idx > 0:
-                try:
-                    refreshed_root = self._find_root_web_area()
-                    if refreshed_root is not None:
-                        self.root = refreshed_root
-                    send_button = self._find_send_button(
-                        self._find_button_by_name(self.config["toolbar_anchor_button_name"])
-                    )
-                except Exception:
-                    pass
-
-                # Check if composer still has content; re-paste if empty or probe missing
-                if message_probe:
-                    composer_probe = self._probe_in_composer(composer_rect, message_probe)
-                    composer_has_probe = composer_probe["probe_present"]
-                else:
-                    composer_probe = {"probe_present": True, "status": "no_probe_check"}
-                    composer_has_probe = True
-
-                if not composer_has_probe:
-                    print(f"[send attempt {attempt_idx+1}] Composer missing probe — re-pasting prompt...")
-                    self.focus_composer()
-                    pyperclip.copy(prompt)
-                    hotkey(VK_CONTROL, VK_V)
-                    time.sleep(self.config["after_paste_wait_sec"])
-                    if message_probe:
-                        probe_post_paste_count, _, _ = self.count_token_in_ui(message_probe)
-                else:
-                    composer_probe = {"probe_present": True, "status": "probe_still_in_composer"}
-
-            attempt_send_btn_summary = self._ctrl_summary(send_button)
-            actual_method = self._try_click_send(method, send_button)
-            time.sleep(self.config["after_send_wait_sec"])
-
-            # Quick post-send probe check
-            post_send_probe_count = None
-            post_send_visible = None
+        while time.time() < obs_deadline:
             if message_probe:
                 post_send_probe_count, _, post_texts = self.count_token_in_ui(message_probe)
                 post_send_visible = len(post_texts)
-
             send_btn_after = self._ctrl_summary(
                 self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
             )
 
-            attempt_log = {
-                "attempt": attempt_idx + 1,
-                "method": actual_method,
-                "send_button_before": attempt_send_btn_summary,
-                "send_button_after": send_btn_after,
-                "post_send_probe_count": post_send_probe_count,
-                "post_send_visible": post_send_visible,
-            }
-            attempts_log.append(attempt_log)
-            print(f"[send attempt {attempt_idx+1}/{max_attempts}] method={actual_method} post_probe_count={post_send_probe_count}")
-
-            # Early-exit check: if probe count already increased, we are done
+            # Evidence A: probe count increased
             if (
                 message_probe
                 and post_send_probe_count is not None
                 and probe_post_paste_count is not None
                 and post_send_probe_count >= probe_post_paste_count + 1
             ):
-                print(f"[send attempt {attempt_idx+1}] Early send confirmation by probe count — stopping retries.")
+                print(f"[send] Post-send observation: probe count increased to {post_send_probe_count} — confirmed.")
+                early_confirmed = True
                 break
 
-            # Also stop if send button became unavailable (message likely accepted)
+            # Evidence B: send button unavailable
             if self._is_send_button_unavailable(send_btn_after):
-                print(f"[send attempt {attempt_idx+1}] Send button became unavailable — stopping retries.")
+                print("[send] Post-send observation: send button became unavailable — confirmed.")
+                early_confirmed = True
                 break
 
-            if attempt_idx < max_attempts - 1:
-                print(f"[send attempt {attempt_idx+1}] No immediate confirmation signal; waiting {retry_wait_sec}s before retry...")
-                time.sleep(retry_wait_sec)
+            time.sleep(poll_sec)
+
+        attempt_log = {
+            "attempt": 1,
+            "method": actual_method,
+            "send_button_before": send_btn_summary_before,
+            "send_button_after": send_btn_after,
+            "post_send_probe_count": post_send_probe_count,
+            "post_send_visible": post_send_visible,
+            "early_confirmed_in_observation": early_confirmed,
+        }
 
         return {
             "composer_rect": composer_rect.to_dict(),
-            "send_button": self._ctrl_summary(send_button),
+            "send_button": send_btn_summary_before,
             "paste_completed": True,
             "send_attempted": True,
             "send_method": base_send_method,
             "message_probe_post_paste_count": probe_post_paste_count,
-            "send_attempts_log": attempts_log,
-            "send_attempts_count": len(attempts_log),
+            "send_attempts_log": [attempt_log],
+            "send_attempts_count": 1,
         }
 
     def maybe_scroll_to_bottom(self) -> None:

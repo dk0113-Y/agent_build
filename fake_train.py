@@ -125,9 +125,14 @@ def build_metric_point(
     progress = step / max(total_steps, 1)
 
     # Synthetic Optimums
-    turn_penalty_opt = 0.02
-    revisit_penalty_opt = 0.08
-    entry_k_opt = 10
+    # These are set deliberately far from the starter params so that GPT/Codex
+    # needs ~4 rounds of guided parameter adjustment to converge.
+    # Starter: turn=0.04, revisit=0.12, entry_k=6
+    # Optimum: turn=0.015, revisit=0.05, entry_k=12
+    # Each dimension needs ~3-4 steps of realistic GPT-recommended changes.
+    turn_penalty_opt = 0.015
+    revisit_penalty_opt = 0.05
+    entry_k_opt = 12
 
     # Distance to optimum (L1 style with weights)
     dist_turn = abs(turn_penalty - turn_penalty_opt)
@@ -365,16 +370,24 @@ def main() -> int:
     write_checkpoint(checkpoints_dir / "best.pt", label="best", point=best_point)
 
     # Write oracle/synthetic truth summary
-    turn_penalty_opt = 0.02
-    revisit_penalty_opt = 0.08
-    entry_k_opt = 10
+    # Optimum is set far from starter so ~4 GPT-directed rounds are needed:
+    # Starter: turn=0.04, revisit=0.12, entry_k=6
+    # Optimum: turn=0.015, revisit=0.05, entry_k=12
+    # A single GPT round typically moves each param by ~0.01 (turn), ~0.02 (revisit), ~2 (entry_k).
+    # This means: both penalties need 3+ rounds and entry_k needs 3+ rounds before all three
+    # can be simultaneously within the tight target tolerance.
+    turn_penalty_opt = 0.015
+    revisit_penalty_opt = 0.05
+    entry_k_opt = 12
     dist_turn = abs(args.turn_penalty - turn_penalty_opt)
     dist_revisit = abs(args.revisit_penalty - revisit_penalty_opt)
     dist_k = abs(args.entry_k - entry_k_opt)
     error_score = (dist_turn * 150.0) + (dist_revisit * 60.0) + (dist_k * 1.5)
-    
-    # Target reached if close enough
-    target_reached = dist_turn <= 0.005 and dist_revisit <= 0.01 and dist_k <= 1
+
+    # Tight per-dimension tolerances ensure all three must be close simultaneously.
+    # With starter params, distances are: turn=0.025, revisit=0.07, entry_k=6 —
+    # none of these can reach tolerance in fewer than 3 rounds of realistic change.
+    target_reached = dist_turn <= 0.008 and dist_revisit <= 0.012 and dist_k <= 1
 
     import json
     oracle_data = {
@@ -384,11 +397,11 @@ def main() -> int:
             "entry_k": entry_k_opt
         },
         "current_distance": {
-            "turn_penalty": dist_turn,
-            "revisit_penalty": dist_revisit,
+            "turn_penalty": round(dist_turn, 6),
+            "revisit_penalty": round(dist_revisit, 6),
             "entry_k": dist_k
         },
-        "error_score": error_score,
+        "error_score": round(error_score, 4),
         "target_reached": target_reached
     }
     (run_dir / "synthetic_truth.json").write_text(json.dumps(oracle_data, indent=2), encoding="utf-8")
