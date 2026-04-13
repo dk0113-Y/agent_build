@@ -1,226 +1,156 @@
 #!/usr/bin/env python
-"""
-Exchange Protocol for GitHub-based round synchronization.
-Handles manifests, summaries, and directory structure for the exchange repository.
-"""
+"""Exchange protocol helpers for publishing local rounds to the exchange repository."""
 
 from __future__ import annotations
 
 import json
-import re
 import shutil
-from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from automation_protocol import (
-    GPT_INPUT_FILENAME,
-    ROUND_STATE_FILENAME,
-    ProtocolError,
-    load_round_state_file,
-    normalize_round_id,
-    read_json_file,
-    write_json_file,
-    repo_root,
-)
 
-EXCHANGE_SCHEMA_VERSION = "1.0"
-
-@dataclass
-class RoundSummary:
-    schema_version: str
-    round_id: str
-    status: str
-    source_round_id: str
-    run_dir: str
-    parameter_changes: list[dict[str, Any]]
-    compare_targets: list[str]
-    core_questions: list[str]
-    recommended_next_step: str
-    confidence_or_caveat: str
-    updated_at: str
-
-@dataclass
-class IndexManifest:
-    schema_version: str
-    round_id: str
-    task_type: str
-    stable_context_files: list[str]
-    round_files: list[str]
-    artifact_hashes: dict[str, str]
-    expected_output_file: str
-    notes: str
-
-@dataclass
-class CurrentRound:
-    schema_version: str
-    project_name: str
-    exchange_repo_url: str
-    branch: str
-    current_round_id: str
-    current_round_manifest: str
-    recommended_entry_docs: list[str]
-    expected_output_file: str
-    last_exchange_commit_sha: str
-    updated_at: str
+EXCHANGE_SCHEMA_VERSION = "2.0"
 
 
 def get_now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def extract_field_from_markdown(text: str, field_name: str) -> str:
-    """Extracts the content after a specific bullet point in a markdown report."""
-    pattern = rf"- {re.escape(field_name)}:\s*(.*)"
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        content = match.group(1).strip()
-        # If it's a multi-line field, we might need more logic, 
-        # but for now we take the line or the next indented block.
-        # This is a simple implementation.
-        return content
-    return "UNSET"
+def read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-def parse_round_summary(
-    round_dir: Path, 
-    decision: dict[str, Any], 
-    state: Any, 
-    report_text: str
-) -> RoundSummary:
-    
-    # Extract parameter changes in a flattened way for summary
-    param_changes = []
-    for change in decision.get("parameter_changes", []):
-        param_changes.append({
-            "name": change.get("name"),
-            "old": change.get("old_value"),
-            "new": change.get("new_value"),
-            "reason": change.get("reason")
-        })
-
-    # Extract compare targets
-    compare_targets = decision.get("codex_analysis_focus", {}).get("compare_targets", [])
-    
-    # Extract questions
-    questions = decision.get("codex_analysis_focus", {}).get("questions", [])
-
-    return RoundSummary(
-        schema_version=EXCHANGE_SCHEMA_VERSION,
-        round_id=state.round_id,
-        status=state.status,
-        source_round_id=state.source_round_id,
-        run_dir=state.run_dir,
-        parameter_changes=param_changes,
-        compare_targets=compare_targets,
-        core_questions=questions,
-        recommended_next_step=extract_field_from_markdown(report_text, "Recommended next step"),
-        confidence_or_caveat=extract_field_from_markdown(report_text, "Confidence / caveat"),
-        updated_at=get_now_iso()
-    )
+def stable_context_files_for_mode(experiment_mode: str) -> list[str]:
+    if experiment_mode == "formal_train":
+        return [
+            "docs/project_context.md",
+            "docs/automation_scope.md",
+            "docs/reading_order.md",
+            "docs/current_mainline.md",
+            "docs/evaluation_charter.md",
+            "docs/stopping_policy.md",
+            "docs/output_contract.md",
+            "docs/formal_artifact_map.md",
+            "docs/tuning_policy.md",
+        ]
+    return [
+        "docs/project_context.md",
+        "docs/automation_scope.md",
+        "docs/output_contract.md",
+    ]
 
 
-def initialize_exchange_repo(exchange_dir: Path):
-    """Initializes the standard directory structure and docs in the exchange repo."""
+def recommended_entry_docs_for_mode(experiment_mode: str) -> list[str]:
+    if experiment_mode == "formal_train":
+        return [
+            "docs/reading_order.md",
+            "docs/project_context.md",
+            "docs/current_mainline.md",
+            "docs/evaluation_charter.md",
+            "docs/stopping_policy.md",
+            "docs/output_contract.md",
+        ]
+    return [
+        "docs/project_context.md",
+        "docs/automation_scope.md",
+        "docs/output_contract.md",
+    ]
+
+
+def project_name_for_mode(experiment_mode: str) -> str:
+    if experiment_mode == "formal_train":
+        return "DRL-path-finding formal_train exchange"
+    return "Automation rehearsal exchange"
+
+
+def initialize_exchange_repo(exchange_dir: Path) -> None:
     (exchange_dir / "docs").mkdir(parents=True, exist_ok=True)
     (exchange_dir / "rounds").mkdir(parents=True, exist_ok=True)
     (exchange_dir / "outbox").mkdir(parents=True, exist_ok=True)
 
-    # Seed documents - source them from main repo if possible
-    seed_docs = {
-        "docs/project_context.md": (
-            "# Project Context\n\n"
-            "This exchange repository (`RRL_test`) is currently used for **\"automated engineering joint-debugging / pipeline rehearsal\"**, not for GPT to focus primarily on DRL research and algorithm discussions itself.\n\n"
-            "## Purpose\n\n"
-            "This is a **controlled synthetic rehearsal**.\n"
-            "The goal is to verify if the automation pipeline can continuously advance based cleanly on publicly shared materials.\n"
-            "Do not treat this as an open-ended scientific exploration.\n\n"
-            "The repository stores:\n"
-            "- Control plane materials\n"
-            "- Round states\n"
-            "- Index entries for automation loops\n"
-            "- Output contracts\n"
-            "- The analysis context for the current round\n\n"
-            "## Context Roles\n\n"
-            "In this rehearsal:\n"
-            "- `DRL_automatic` (local environment) acts as the execution repository for synthetic training runs.\n"
-            "- `RRL_test` (this repository) acts as the exchange and reading repository for GPT/Codex.\n\n"
-            "## Agent Focus\n\n"
-            "GPT should prioritize:\n"
-            "1. Ensuring the automation loop is logically closed based on public evidence.\n"
-            "2. Promoting the round forward successfully via small, interpretable adjustments.\n"
-            "3. Aligning strictly with the unified protocol and output format.\n"
-            "4. Outputting a correctly formed `decision_json` that can be successfully ingested by the system.\n"
-            "General discussions or algorithmic deep-dives into the DRL method itself should be avoided in this rehearsal phase."
-        ),
-        "docs/automation_scope.md": (
-            "# Automation Scope\n\n"
-            "The primary recommended track for automation is currently **Exchange Mode**.\n\n"
-            "## Understanding a Round Cycle\n\n"
-            "A single round iteration in the mainline cycle should be understood as follows:\n\n"
-            "1. Local `round` / `scheduler` / training outputs\n"
-            "2. → `codex_request.md`\n"
-            "3. → Codex analyzes to produce `codex_report.md`\n"
-            "4. → `prepare_gpt_input.py` running\n"
-            "5. → `publish_round_to_exchange.py`\n"
-            "6. → `RRL_test/outbox/web_index_message_round_xxxx.md`\n"
-            "7. → `exchange_web_bridge.py`\n"
-            "8. → `tmp/round_xxxx_gpt_reply.md`\n"
-            "9. → `tmp/next_real_decision_round_xxxx.json`\n"
-            "10. → `ingest_exchange_decision.py`\n"
-            "11. → New round created\n"
-            "12. → `scheduler.py`\n\n"
-            "## Current Rehearsal Objective\n\n"
-            "The current objective is **\"single round promotion / single round closure validation\"**. It is **not** a \"fully unattended closed-loop\".\n\n"
-            "- **Operationally Passing:** Execution of the training run, markdown report generation, publishing to the exchange repo, and the bridge cycle creating and ingesting the reply into a new round have been successfully tested in sequence.\n"
-            "- **Pending Validation:** The continuous, unattended triggering of the full cycle remains under integration test. Do not assume the system is running completely hands-off yet."
-        ),
-        "docs/tuning_policy.md": repo_root() / "tuning_policy.md",
-        "docs/output_contract.md": repo_root() / "templates/gpt_decision_output_contract.md"
+    placeholders = {
+        "docs/project_context.md": "# Project Context\n\nPending formal context publication.\n",
+        "docs/automation_scope.md": "# Automation Scope\n\nPending automation scope publication.\n",
+        "docs/output_contract.md": "# Output Contract\n\nPending output contract publication.\n",
     }
-
-    for rel_path, source in seed_docs.items():
+    for rel_path, text in placeholders.items():
         target_path = exchange_dir / rel_path
-        if isinstance(source, Path):
-            if source.exists():
-                shutil.copy2(source, target_path)
-        else:
-            target_path.write_text(source, encoding="utf-8")
+        if not target_path.exists():
+            target_path.write_text(text, encoding="utf-8")
 
 
 def sync_file_to_exchange(source_path: Path, target_dir: Path, target_name: str | None = None) -> Path:
     if not source_path.exists():
         raise FileNotFoundError(f"Source file not found: {source_path}")
-    
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / (target_name or source_path.name)
     shutil.copy2(source_path, target_path)
     return target_path
 
 
-def build_web_index_message(exchange_url: str, round_id: str, branch: str = "main") -> str:
+def load_round_summary(local_round_dir: Path, decision_payload: dict[str, Any], round_state: dict[str, Any]) -> dict[str, Any]:
+    summary_path = local_round_dir / "round_summary.json"
+    if summary_path.exists():
+        return read_json(summary_path)
+    return {
+        "schema_version": EXCHANGE_SCHEMA_VERSION,
+        "artifact_type": "round_summary",
+        "round_id": round_state.get("round_id"),
+        "generated_at": get_now_iso(),
+        "experiment_mode": decision_payload.get("experiment_mode", "synthetic_rehearsal"),
+        "source_of_truth_repo": decision_payload.get("source_of_truth_repo", ""),
+        "evaluation_mode": decision_payload.get("evaluation_mode", "synthetic_oracle"),
+        "run_dir": round_state.get("run_dir", ""),
+        "baseline_round_id": decision_payload.get("baseline_round_id"),
+        "baseline_commit_sha": decision_payload.get("baseline_commit_sha"),
+        "comparability_group": decision_payload.get("comparability_group"),
+        "decision_zone": decision_payload.get("decision_zone", "insufficient_evidence"),
+        "stop_window_state": decision_payload.get("stop_window_state", {}),
+        "manual_review_reasons": decision_payload.get("manual_review_reasons", []),
+        "insufficient_evidence_flags": decision_payload.get("insufficient_evidence_flags", []),
+        "verdicts": {
+            "overall_round_verdict": "insufficient_evidence",
+        },
+        "notes": [
+            "round_summary.json was absent locally; this is a minimal compatibility fallback."
+        ],
+    }
+
+
+def build_web_index_message(
+    *,
+    exchange_url: str,
+    round_id: str,
+    branch: str,
+    experiment_mode: str,
+    manifest_path: str,
+    recommended_entry_docs: list[str],
+) -> str:
+    if experiment_mode == "formal_train":
+        entry_docs = "\n".join(f"{index}. Read `{doc}`" for index, doc in enumerate(recommended_entry_docs, start=1))
+        return (
+            f"# New Formal Train Round: {round_id}\n\n"
+            f"A new formal_train exchange bundle is ready.\n\n"
+            f"Repository: {exchange_url}\n"
+            f"Branch: {branch}\n"
+            f"Manifest: `{manifest_path}`\n\n"
+            f"Required reading order:\n{entry_docs}\n\n"
+            f"After the docs, read `CURRENT_ROUND.json`, then `{manifest_path}`, then the structured round files "
+            f"(`metric_snapshot.json`, `benchmark_summary.json`, `config_snapshot.json`, `artifact_index.json`, "
+            f"`comparability_report.json`, `round_summary.json`).\n\n"
+            f"Formal judgement rules:\n"
+            f"- Treat the real training repository artifacts as the only source of truth.\n"
+            f"- Do not reuse rehearsal semantics as evidence for formal improvement.\n"
+            f"- Check comparability before claiming improvement, regression, plateau, or stopping.\n"
+            f"- If evidence is insufficient or comparability failed, keep that explicit in the next decision JSON.\n\n"
+            f"Return only one JSON payload wrapped between `DECISION_JSON_BEGIN` and `DECISION_JSON_END`.\n"
+        )
     return (
         f"# New Automation Round: {round_id}\n\n"
-        f"A new set of experimental results and analysis is ready for review.\n\n"
-        f"**Repository Information:**\n"
-        f"- Exchange Repository: {exchange_url}\n"
-        f"- Branch: {branch}\n"
-        f"- Target Round: {round_id}\n\n"
-        f"**Behavioral Boundaries:**\n"
-        f"- Treat this as a bounded synthetic rehearsal.\n"
-        f"- Infer next-step parameter changes only from the provided public round materials.\n"
-        f"- Do not assume any hidden target values or a fixed number of remaining rounds.\n\n"
-        f"**Instructions:**\n"
-        f"1. Read `CURRENT_ROUND.json` for the high-level task and entry points.\n"
-        f"2. Follow the manifest at `rounds/{round_id}/index_manifest.json` to access relevant reports and logs.\n"
-        f"3. Note that these files are automation materials representing the current state of an automation rehearsal and protocol-driven decision logic.\n"
-        f"4. Provide only a single JSON code block as your response, containing a valid `next_gpt_decision.json`.\n"
-        f"5. **Format Requirement**: Your entire response MUST just be the JSON block wrapped between `DECISION_JSON_BEGIN` and `DECISION_JSON_END`.\n"
-        f"   - Write the literal marker `DECISION_JSON_BEGIN` on its own line.\n"
-        f"   - Then provide the JSON block.\n"
-        f"   - Then write the literal marker `DECISION_JSON_END` on its own line.\n"
-        f"   - Do not include any explanations, prose, or reasoning outside these markers. Do not add comments inside the JSON.\n"
-        f"   - Inside the JSON, you can use `\"round_id\": \"round_xxxx\"`.\n\n"
-        f"Refer to `docs/output_contract.md` for the full format requirements."
+        f"Repository: {exchange_url}\n"
+        f"Branch: {branch}\n"
+        f"Manifest: `{manifest_path}`\n\n"
+        f"Read `CURRENT_ROUND.json`, then `{manifest_path}`, then `docs/output_contract.md`.\n"
+        f"Return only one JSON payload wrapped between `DECISION_JSON_BEGIN` and `DECISION_JSON_END`.\n"
     )

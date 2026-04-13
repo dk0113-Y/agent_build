@@ -1,56 +1,73 @@
 # GPT Decision Output Contract
 
-To ensure the automation pipeline can ingest your decisions cleanly, you **MUST** provide your output using the single standard format described below.
-
-## 1. Required Output Format
-
-Your entire response must be structured exactly as follows:
+GPT must emit one and only one JSON payload wrapped by the markers below.
 
 DECISION_JSON_BEGIN
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "round_id": "round_xxxx",
-  "decision_status": "run_next_round",
-  "target_program": "fake_train.py",
-  "run_args": {
-    "turn_penalty": 0.03,
-    "revisit_penalty": 0.1,
-    "entry_k": 8,
-    "steps": 24,
-    "sleep_sec": 0.35,
-    "seed": 7
+  "experiment_mode": "formal_train",
+  "source_of_truth_repo": "../代码1",
+  "decision_status": "pause_for_manual_review",
+  "evaluation_mode": "formal_artifact_review",
+  "comparability_group": "formal_mainline_v1__example",
+  "baseline_round_id": "round_0021",
+  "baseline_commit_sha": "abc123",
+  "decision_zone": "manual_review_required",
+  "stop_window_state": {
+    "recommended_action": "pause_for_manual_review",
+    "window_basis": "bootstrap_thresholds",
+    "comparability_status": "bootstrap_comparable"
   },
-  "parameter_changes": [
-    {
-      "name": "parameter_name",
-      "old_value": 0.0,
-      "new_value": 0.0,
-      "delta": 0.0,
-      "reason": "Detailed explanation of why this change was made."
-    }
+  "manual_review_reasons": [
+    "comparability_only_bootstrap_confirmed"
   ],
+  "insufficient_evidence_flags": [
+    "historical_thresholds_bootstrap_only"
+  ],
+  "target_program": "train_q_agent.py",
+  "run_args": {
+    "cli_args": ["--device", "cuda"],
+    "run_name": null,
+    "output_root": null,
+    "notes": "Optional execution notes."
+  },
+  "parameter_changes": [],
   "codex_analysis_focus": {
-    "compare_targets": ["previous_round_run", "best_known_reference"],
-    "required_logs": ["logs/train_steps.csv", "logs/eval_metrics.csv"],
-    "required_plots": ["plots/reward_curve.png", "plots/coverage_curve.png"],
-    "questions": ["Specific question about the training results..."],
-    "expected_output_style": "Write a structured markdown report for GPT using the codex_report.md sections."
+    "compare_targets": ["best_known_reference"],
+    "required_logs": [
+      "logs/train_steps.csv",
+      "logs/train_episodes.csv",
+      "logs/eval_metrics.csv",
+      "logs/final_probe.csv",
+      "logs/metric_snapshot.json",
+      "logs/benchmark_summary.json",
+      "logs/config_snapshot.json",
+      "logs/artifact_index.json"
+    ],
+    "required_plots": [],
+    "questions": [
+      "Is the next round formally comparable?",
+      "What do best_eval, last_eval, and final_probe jointly imply?",
+      "Should the controller run, stop, pause, or analyze only?"
+    ],
+    "expected_output_style": "Write a structured markdown report grounded in the formal JSON artifacts."
   },
   "reference_targets": {
-    "best_known_reference": "path/to/baseline/run",
+    "best_known_reference": "path/to/reference/run",
     "manual_compare_targets": []
   },
-  "controller_notes": "Summary of experimental intent."
+  "controller_notes": "Explain the intended next-step scope."
 }
 ```
 DECISION_JSON_END
 
-## 2. Formatting Rules & Prohibitions
+## Required Rules
 
-1. **One Single JSON**: The output must contain one and only one JSON block between the `DECISION_JSON_BEGIN` and `DECISION_JSON_END` markers.
-2. **Top-level Object**: The JSON itself must be a single top-level object (`{...}`).
-3. **No Outer Text**: Do NOT include any introductory prose, explanations, or conclusions outside the markers.
-4. **No Inner Text**: Do NOT include any comments (e.g. `// comment`), trailing commas, or explanatory text inside the JSON code block.
-5. **Clean Strings**: Ensure all text inside the JSON is clean and free of polling markers or citation references (e.g., avoid `:contentReference[...]`).
-6. **Round ID Mapping**: Using `"round_id": "round_xxxx"` is perfectly acceptable and expected, as the ingestion layer will replace it with the correct ID.
+1. `experiment_mode` must be either `synthetic_rehearsal` or `formal_train`.
+2. Formal rounds must keep `source_of_truth_repo` pointed at the real training repository and must treat comparability as a gate, not a note.
+3. `decision_status` must be one of `run_next_round`, `stop_experiment`, `pause_for_manual_review`, or `analyze_only`.
+4. `decision_zone`, `stop_window_state`, `manual_review_reasons`, and `insufficient_evidence_flags` must stay aligned with the verdicts in the round summary.
+5. If comparability failed or evidence is insufficient, do not emit a payload that implies a positive formal improvement claim.
+6. Do not add any text outside the markers, comments inside the JSON, or trailing commas.

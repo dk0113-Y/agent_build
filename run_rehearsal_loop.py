@@ -38,9 +38,19 @@ def main():
     if not start_decision.exists():
         start_round_dir.mkdir(parents=True, exist_ok=True)
         starter_data = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "round_id": start_round_id,
+            "experiment_mode": "synthetic_rehearsal",
+            "source_of_truth_repo": str(Path(".").resolve()),
             "decision_status": "run_next_round",
+            "evaluation_mode": "synthetic_oracle",
+            "comparability_group": "synthetic_rehearsal_demo_v1",
+            "baseline_round_id": None,
+            "baseline_commit_sha": None,
+            "decision_zone": "promotion_candidate",
+            "stop_window_state": {"recommended_action": "run_next_round"},
+            "manual_review_reasons": [],
+            "insufficient_evidence_flags": [],
             "target_program": "fake_train.py",
             "run_args": {
                 "turn_penalty": 0.04,
@@ -375,9 +385,19 @@ def main():
                 entry = max(1, args_run.get("entry_k", 6) + random.choice([-1, 0, 1]))
 
                 next_dec = {
-                    "schema_version": "1.0",
+                    "schema_version": "2.0",
                     "round_id": "round_xxxx",
+                    "experiment_mode": "synthetic_rehearsal",
+                    "source_of_truth_repo": str(Path(".").resolve()),
                     "decision_status": "run_next_round",
+                    "evaluation_mode": "synthetic_oracle",
+                    "comparability_group": "synthetic_rehearsal_demo_v1",
+                    "baseline_round_id": None,
+                    "baseline_commit_sha": None,
+                    "decision_zone": "promotion_candidate",
+                    "stop_window_state": {"recommended_action": "run_next_round"},
+                    "manual_review_reasons": [],
+                    "insufficient_evidence_flags": [],
                     "target_program": "fake_train.py",
                     "run_args": {
                         "turn_penalty": turn,

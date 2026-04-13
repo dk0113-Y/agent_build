@@ -19,6 +19,7 @@ from automation_protocol import (
     rounds_root,
     update_round_state_file,
 )
+from formal_round_summary import load_formal_bundle, read_json, render_formal_gpt_input, round_is_formal
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,18 +59,33 @@ def main() -> int:
         )
         round_state = load_round_state_file(round_state_path)
 
-        codex_request_text = codex_request_path.read_text(encoding="utf-8")
-        codex_report_text = codex_report_path.read_text(encoding="utf-8")
-        is_ready, reason = codex_report_is_ready(decision.round_id, codex_report_text)
-        if not is_ready:
-            raise ProtocolError(reason)
+        if round_is_formal(round_dir):
+            bundle = load_formal_bundle(round_dir)
+            if not bundle["comparability_report"] or not bundle["round_summary"]:
+                raise ProtocolError(
+                    "formal_train round is missing comparability_report.json or round_summary.json."
+                )
+            gpt_input_text = render_formal_gpt_input(
+                decision=read_json(decision_file),
+                round_state=read_json(round_state_path),
+                round_summary=bundle["round_summary"],
+                comparability_report=bundle["comparability_report"],
+                metric_snapshot=bundle["metric_snapshot"],
+                benchmark_summary=bundle["benchmark_summary"],
+            )
+        else:
+            codex_request_text = codex_request_path.read_text(encoding="utf-8")
+            codex_report_text = codex_report_path.read_text(encoding="utf-8")
+            is_ready, reason = codex_report_is_ready(decision.round_id, codex_report_text)
+            if not is_ready:
+                raise ProtocolError(reason)
 
-        gpt_input_text = render_gpt_input_package(
-            decision=decision,
-            round_state=round_state,
-            codex_request_text=codex_request_text,
-            codex_report_text=codex_report_text,
-        )
+            gpt_input_text = render_gpt_input_package(
+                decision=decision,
+                round_state=round_state,
+                codex_request_text=codex_request_text,
+                codex_report_text=codex_report_text,
+            )
         gpt_input_path.write_text(gpt_input_text, encoding="utf-8")
         update_round_state_file(round_state_path, gpt_input_path=gpt_input_path)
 

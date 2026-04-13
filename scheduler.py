@@ -24,7 +24,7 @@ from automation_protocol import (
     GPTDecision,
     ProtocolError,
     RunArgs,
-    decision_to_fake_train_cli_args,
+    decision_to_execution_cli_args,
     ensure_round_state_file,
     load_decision_file,
     render_codex_request,
@@ -33,19 +33,29 @@ from automation_protocol import (
     update_round_state_file,
 )
 
-
-EXPECTED_SUBDIRS = ("checkpoints", "logs", "plots")
-EXPECTED_LOG_FILES = (
+REHEARSAL_EXPECTED_SUBDIRS = ("checkpoints", "logs", "plots")
+REHEARSAL_EXPECTED_LOG_FILES = (
     "train_steps.csv",
     "train_episodes.csv",
     "eval_metrics.csv",
     "final_probe.csv",
 )
-EXPECTED_PLOT_FILES = (
+REHEARSAL_EXPECTED_PLOT_FILES = (
     "reward_curve.png",
     "coverage_curve.png",
     "success_rate_curve.png",
     "loss_curve.png",
+)
+FORMAL_EXPECTED_SUBDIRS = ("checkpoints", "logs")
+FORMAL_EXPECTED_LOG_FILES = (
+    "train_steps.csv",
+    "train_episodes.csv",
+    "eval_metrics.csv",
+    "final_probe.csv",
+    "metric_snapshot.json",
+    "benchmark_summary.json",
+    "config_snapshot.json",
+    "artifact_index.json",
 )
 EXPECTED_CHECKPOINT_FILES = ("best.pt", "last.pt")
 
@@ -124,8 +134,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def outputs_dir() -> Path:
-    path = repo_root() / "outputs"
+def execution_repo_root(decision: GPTDecision | None) -> Path:
+    if decision is None or decision.experiment_mode != "formal_train":
+        return repo_root()
+    target = Path(decision.source_of_truth_repo)
+    if not target.is_absolute():
+        target = (repo_root() / target).resolve()
+    return target
+
+
+def target_program_path(decision: GPTDecision | None) -> Path:
+    if decision is None:
+        return repo_root() / "fake_train.py"
+    return execution_repo_root(decision) / decision.target_program
+
+
+def outputs_dir(decision: GPTDecision | None = None) -> Path:
+    if decision is not None and decision.run_args.output_root:
+        path = Path(decision.run_args.output_root)
+        if not path.is_absolute():
+            path = (execution_repo_root(decision) / path).resolve()
+    else:
+        path = execution_repo_root(decision) / "outputs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -192,7 +222,9 @@ def resolve_context(args: argparse.Namespace) -> SchedulerContext:
 def launch_training_process(context: SchedulerContext) -> subprocess.Popen[bytes]:
     assert context.run_args is not None
     if context.decision is not None:
-        launch_args = decision_to_fake_train_cli_args(context.decision)
+        launch_args = decision_to_execution_cli_args(context.decision)
+        program_path = target_program_path(context.decision)
+        working_dir = execution_repo_root(context.decision)
     else:
         launch_args = [
             "--turn-penalty",
@@ -208,9 +240,11 @@ def launch_training_process(context: SchedulerContext) -> subprocess.Popen[bytes
             "--seed",
             str(context.run_args.seed),
         ]
+        program_path = repo_root() / "fake_train.py"
+        working_dir = repo_root()
 
-    command = [sys.executable, str(repo_root() / "fake_train.py"), *launch_args]
-    return subprocess.Popen(command, cwd=str(repo_root()))
+    command = [sys.executable, str(program_path), *launch_args]
+    return subprocess.Popen(command, cwd=str(working_dir))
 
 
 def choose_newest_run_dir(base_dir: Path, run_names: set[str]) -> Path | None:
@@ -362,23 +396,33 @@ def validate_non_empty_file(path: Path, missing_items: list[str], relative_path:
         missing_items.append(f"{relative_path} (empty)")
 
 
-def validate_run_artifacts(run_dir: Path) -> ValidationResult:
+def validate_run_artifacts(run_dir: Path, target_program: str) -> ValidationResult:
     missing_items: list[str] = []
 
-    for subdir_name in EXPECTED_SUBDIRS:
+    if target_program == "train_q_agent.py":
+        expected_subdirs = FORMAL_EXPECTED_SUBDIRS
+        expected_logs = FORMAL_EXPECTED_LOG_FILES
+        expected_plots: tuple[str, ...] = ()
+    else:
+        expected_subdirs = REHEARSAL_EXPECTED_SUBDIRS
+        expected_logs = REHEARSAL_EXPECTED_LOG_FILES
+        expected_plots = REHEARSAL_EXPECTED_PLOT_FILES
+
+    for subdir_name in expected_subdirs:
         subdir = run_dir / subdir_name
         if not subdir.exists() or not subdir.is_dir():
             missing_items.append(subdir_name)
 
     logs_dir = run_dir / "logs"
     if logs_dir.exists():
-        for filename in EXPECTED_LOG_FILES:
+        for filename in expected_logs:
             validate_non_empty_file(logs_dir / filename, missing_items, f"logs/{filename}")
 
-    plots_dir = run_dir / "plots"
-    if plots_dir.exists():
-        for filename in EXPECTED_PLOT_FILES:
-            validate_non_empty_file(plots_dir / filename, missing_items, f"plots/{filename}")
+    if expected_plots:
+        plots_dir = run_dir / "plots"
+        if plots_dir.exists():
+            for filename in expected_plots:
+                validate_non_empty_file(plots_dir / filename, missing_items, f"plots/{filename}")
 
     checkpoints_dir = run_dir / "checkpoints"
     if checkpoints_dir.exists():
@@ -595,7 +639,7 @@ def main() -> int:
         )
         return 0
 
-    base_dir = outputs_dir()
+    base_dir = outputs_dir(context.decision)
     baseline_runs = snapshot_existing_runs(base_dir)
 
     print("status=launching", flush=True)
@@ -658,7 +702,10 @@ def main() -> int:
     return_code, timeout_reason = wait_for_process_exit(process, args.poll_sec, run_dir, args.training_no_progress_timeout_sec, args.training_hard_timeout_sec)
 
     print("status=validating_artifacts", flush=True)
-    validation = validate_run_artifacts(run_dir)
+    validation = validate_run_artifacts(
+        run_dir,
+        context.decision.target_program if context.decision is not None else "fake_train.py",
+    )
     success = return_code == 0 and validation.success and (timeout_reason == "exited")
     
     missing_items = list(validation.missing_items) if validation.missing_items else []

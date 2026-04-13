@@ -16,8 +16,17 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "1.0"
-SUPPORTED_TARGET_PROGRAM = "fake_train.py"
+SCHEMA_VERSION = "2.0"
+SUPPORTED_TARGET_PROGRAMS = {"fake_train.py", "train_q_agent.py"}
+SUPPORTED_EXPERIMENT_MODES = {"synthetic_rehearsal", "formal_train"}
+SUPPORTED_EVALUATION_MODES = {"synthetic_oracle", "formal_artifact_review"}
+SUPPORTED_DECISION_ZONES = {
+    "promotion_candidate",
+    "plateau_or_regression",
+    "manual_review_required",
+    "insufficient_evidence",
+    "not_comparable",
+}
 ALLOWED_DECISION_STATUS = {"run_next_round", "stop_experiment", "pause_for_manual_review", "analyze_only"}
 ROUND_ID_PATTERN = re.compile(r"^round_(\d{4})$")
 ROUND_STATE_FILENAME = "round_state.json"
@@ -33,12 +42,16 @@ class ProtocolError(ValueError):
 
 @dataclass
 class RunArgs:
-    turn_penalty: float
-    revisit_penalty: float
-    entry_k: int
-    steps: int
-    sleep_sec: float
-    seed: int
+    turn_penalty: float | None = None
+    revisit_penalty: float | None = None
+    entry_k: int | None = None
+    steps: int | None = None
+    sleep_sec: float | None = None
+    seed: int | None = None
+    cli_args: list[str] | None = None
+    run_name: str | None = None
+    output_root: str | None = None
+    notes: str = ""
 
 
 @dataclass
@@ -69,7 +82,17 @@ class ReferenceTargets:
 class GPTDecision:
     schema_version: str
     round_id: str
+    experiment_mode: str
+    source_of_truth_repo: str
     decision_status: str
+    evaluation_mode: str
+    comparability_group: str | None
+    baseline_round_id: str | None
+    baseline_commit_sha: str | None
+    decision_zone: str
+    stop_window_state: dict[str, Any]
+    manual_review_reasons: list[str]
+    insufficient_evidence_flags: list[str]
     target_program: str
     run_args: RunArgs
     parameter_changes: list[ParameterChange]
@@ -82,6 +105,9 @@ class GPTDecision:
 class RoundState:
     schema_version: str
     round_id: str
+    experiment_mode: str
+    source_of_truth_repo: str
+    evaluation_mode: str
     status: str
     decision_file: str
     codex_request_path: str
@@ -253,10 +279,25 @@ def _optional_numeric(change: dict[str, Any], field_name: str) -> int | float | 
     return value
 
 
+def _optional_list_of_strings(parent: dict[str, Any], field_name: str) -> list[str]:
+    value = parent.get(field_name)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProtocolError(f"Field '{field_name}' must be a list when provided.")
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
 def load_decision_file(path: Path) -> GPTDecision:
     payload = read_json_file(path)
     schema_version = _require_string(payload, "schema_version")
     round_id = normalize_round_id_lenient(_require_string(payload, "round_id"))
+    experiment_mode = _optional_string(payload, "experiment_mode") or "synthetic_rehearsal"
+    if experiment_mode not in SUPPORTED_EXPERIMENT_MODES:
+        raise ProtocolError(
+            f"Invalid experiment_mode '{experiment_mode}'. "
+            f"Expected one of: {sorted(SUPPORTED_EXPERIMENT_MODES)}."
+        )
     decision_status = _require_string(payload, "decision_status")
     if decision_status == "stop":
         decision_status = "stop_experiment"
@@ -270,16 +311,72 @@ def load_decision_file(path: Path) -> GPTDecision:
         )
 
     target_program = _require_string(payload, "target_program")
+    if target_program not in SUPPORTED_TARGET_PROGRAMS:
+        raise ProtocolError(
+            f"Unsupported target_program '{target_program}'. "
+            f"Expected one of: {sorted(SUPPORTED_TARGET_PROGRAMS)}."
+        )
+
+    source_of_truth_repo = _optional_string(payload, "source_of_truth_repo") or (
+        "../代码1" if experiment_mode == "formal_train" else str(repo_root())
+    )
+    evaluation_mode = _optional_string(payload, "evaluation_mode") or (
+        "formal_artifact_review" if experiment_mode == "formal_train" else "synthetic_oracle"
+    )
+    if evaluation_mode not in SUPPORTED_EVALUATION_MODES:
+        raise ProtocolError(
+            f"Invalid evaluation_mode '{evaluation_mode}'. "
+            f"Expected one of: {sorted(SUPPORTED_EVALUATION_MODES)}."
+        )
+    decision_zone = _optional_string(payload, "decision_zone") or (
+        "insufficient_evidence" if experiment_mode == "formal_train" else "promotion_candidate"
+    )
+    if decision_zone not in SUPPORTED_DECISION_ZONES:
+        raise ProtocolError(
+            f"Invalid decision_zone '{decision_zone}'. "
+            f"Expected one of: {sorted(SUPPORTED_DECISION_ZONES)}."
+        )
 
     run_args_raw = _require_mapping(payload, "run_args")
     run_args = RunArgs(
-        turn_penalty=_require_float(run_args_raw, "turn_penalty"),
-        revisit_penalty=_require_float(run_args_raw, "revisit_penalty"),
-        entry_k=_require_int(run_args_raw, "entry_k"),
-        steps=_require_int(run_args_raw, "steps"),
-        sleep_sec=_require_float(run_args_raw, "sleep_sec"),
-        seed=_require_int(run_args_raw, "seed"),
+        turn_penalty=_optional_numeric(run_args_raw, "turn_penalty"),
+        revisit_penalty=_optional_numeric(run_args_raw, "revisit_penalty"),
+        entry_k=(
+            int(run_args_raw["entry_k"])
+            if isinstance(run_args_raw.get("entry_k"), int) else None
+        ),
+        steps=(
+            int(run_args_raw["steps"])
+            if isinstance(run_args_raw.get("steps"), int) else None
+        ),
+        sleep_sec=_optional_numeric(run_args_raw, "sleep_sec"),
+        seed=(
+            int(run_args_raw["seed"])
+            if isinstance(run_args_raw.get("seed"), int) else None
+        ),
+        cli_args=_optional_list_of_strings(run_args_raw, "cli_args"),
+        run_name=_optional_string(run_args_raw, "run_name"),
+        output_root=_optional_string(run_args_raw, "output_root"),
+        notes=_optional_string(run_args_raw, "notes") or "",
     )
+    if (
+        target_program == "fake_train.py"
+        and (
+            run_args.turn_penalty is None
+            or run_args.revisit_penalty is None
+            or run_args.entry_k is None
+            or run_args.steps is None
+            or run_args.sleep_sec is None
+            or run_args.seed is None
+        )
+        and not run_args.cli_args
+    ):
+        raise ProtocolError(
+            "fake_train.py decisions must provide legacy numeric run_args "
+            "or an explicit cli_args list."
+        )
+    if target_program == "train_q_agent.py" and not run_args.cli_args:
+        raise ProtocolError("formal train decisions targeting train_q_agent.py must provide run_args.cli_args.")
 
     parameter_changes: list[ParameterChange] = []
     for index, change in enumerate(_require_list(payload, "parameter_changes"), start=1):
@@ -330,7 +427,17 @@ def load_decision_file(path: Path) -> GPTDecision:
     return GPTDecision(
         schema_version=schema_version,
         round_id=round_id,
+        experiment_mode=experiment_mode,
+        source_of_truth_repo=source_of_truth_repo,
         decision_status=decision_status,
+        evaluation_mode=evaluation_mode,
+        comparability_group=_optional_string(payload, "comparability_group"),
+        baseline_round_id=_optional_string(payload, "baseline_round_id"),
+        baseline_commit_sha=_optional_string(payload, "baseline_commit_sha"),
+        decision_zone=decision_zone,
+        stop_window_state=payload.get("stop_window_state", {}) if isinstance(payload.get("stop_window_state", {}), dict) else {},
+        manual_review_reasons=_optional_list_of_strings(payload, "manual_review_reasons"),
+        insufficient_evidence_flags=_optional_list_of_strings(payload, "insufficient_evidence_flags"),
         target_program=target_program,
         run_args=run_args,
         parameter_changes=parameter_changes,
@@ -341,10 +448,10 @@ def load_decision_file(path: Path) -> GPTDecision:
 
 
 def decision_to_fake_train_cli_args(decision: GPTDecision) -> list[str]:
-    if decision.target_program != SUPPORTED_TARGET_PROGRAM:
+    if decision.target_program != "fake_train.py":
         raise ProtocolError(
             f"Unsupported target_program '{decision.target_program}'. "
-            f"Current scheduler only supports '{SUPPORTED_TARGET_PROGRAM}'."
+            "Current helper only supports 'fake_train.py'."
         )
     args = decision.run_args
     return [
@@ -361,6 +468,12 @@ def decision_to_fake_train_cli_args(decision: GPTDecision) -> list[str]:
         "--seed",
         str(args.seed),
     ]
+
+
+def decision_to_execution_cli_args(decision: GPTDecision) -> list[str]:
+    if decision.target_program == "fake_train.py" and not decision.run_args.cli_args:
+        return decision_to_fake_train_cli_args(decision)
+    return list(decision.run_args.cli_args or [])
 
 
 def render_codex_request_placeholder(round_id: str) -> str:
@@ -406,9 +519,13 @@ def build_round_state(
     gpt_input_path: Path,
 ) -> RoundState:
     timestamp = now_iso()
+    decision_payload = read_json_file(decision_file) if decision_file.exists() else {}
     return RoundState(
         schema_version=SCHEMA_VERSION,
         round_id=normalize_round_id(round_id),
+        experiment_mode=str(decision_payload.get("experiment_mode", "synthetic_rehearsal")).strip() or "synthetic_rehearsal",
+        source_of_truth_repo=str(decision_payload.get("source_of_truth_repo", "")).strip(),
+        evaluation_mode=str(decision_payload.get("evaluation_mode", "")).strip() or "synthetic_oracle",
         status="prepared",
         decision_file=relative_repo_path(decision_file),
         codex_request_path=relative_repo_path(codex_request_path),
@@ -431,6 +548,9 @@ def round_state_to_dict(state: RoundState) -> dict[str, Any]:
     return {
         "schema_version": state.schema_version,
         "round_id": state.round_id,
+        "experiment_mode": state.experiment_mode,
+        "source_of_truth_repo": state.source_of_truth_repo,
+        "evaluation_mode": state.evaluation_mode,
         "status": state.status,
         "decision_file": state.decision_file,
         "codex_request_path": state.codex_request_path,
@@ -469,6 +589,9 @@ def load_round_state_file(path: Path) -> RoundState:
     return RoundState(
         schema_version=_require_string(payload, "schema_version"),
         round_id=normalize_round_id(_require_string(payload, "round_id")),
+        experiment_mode=_optional_string(payload, "experiment_mode") or "synthetic_rehearsal",
+        source_of_truth_repo=_optional_string(payload, "source_of_truth_repo") or "",
+        evaluation_mode=_optional_string(payload, "evaluation_mode") or "synthetic_oracle",
         status=_require_string(payload, "status"),
         decision_file=_require_string(payload, "decision_file"),
         codex_request_path=_require_string(payload, "codex_request_path"),
@@ -516,7 +639,21 @@ def update_round_state_file(path: Path, **changes: Any) -> RoundState:
     for key, value in changes.items():
         if not hasattr(state, key):
             raise ProtocolError(f"Unknown round_state field '{key}'.")
-        if key in {"decision_file", "codex_request_path", "codex_report_path", "gpt_input_path", "run_dir", "source_round_id", "source_decision_sha256", "source_exchange_decision_sha256", "source_exchange_commit_sha", "bridge_status"}:
+        if key in {
+            "decision_file",
+            "codex_request_path",
+            "codex_report_path",
+            "gpt_input_path",
+            "run_dir",
+            "source_round_id",
+            "source_decision_sha256",
+            "source_exchange_decision_sha256",
+            "source_exchange_commit_sha",
+            "bridge_status",
+            "experiment_mode",
+            "source_of_truth_repo",
+            "evaluation_mode",
+        }:
             if value is None:
                 value = ""
             elif isinstance(value, Path):
@@ -803,6 +940,9 @@ def render_gpt_input_package(
             "",
             "## 1. Round metadata",
             f"- Round id: `{round_state.round_id}`",
+            f"- Experiment mode: `{decision.experiment_mode}`",
+            f"- Source of truth repo: `{decision.source_of_truth_repo}`",
+            f"- Evaluation mode: `{decision.evaluation_mode}`",
             f"- Round state status: `{round_state.status}`",
             f"- Run directory: `{round_state.run_dir or 'UNSET'}`",
             f"- Training return code: `{round_state.training_return_code}`",
@@ -810,6 +950,8 @@ def render_gpt_input_package(
             "",
             "## 2. Previous decision summary",
             f"- Decision status: `{decision.decision_status}`",
+            f"- Decision zone: `{decision.decision_zone}`",
+            f"- Stop window state: `{decision.stop_window_state}`",
             f"- Target program: `{decision.target_program}`",
             "- Parameter changes:",
             parameter_summary,
@@ -860,6 +1002,20 @@ def render_codex_request(
     parameter_summary = format_parameter_changes_markdown(decision.parameter_changes)
 
     report_target = relative_repo_path(round_dir / "codex_report.md")
+    formal_context_lines: list[str] = []
+    if decision.experiment_mode == "formal_train":
+        formal_context_lines = [
+            f"- Experiment mode: `{decision.experiment_mode}`",
+            f"- Source of truth repo: `{decision.source_of_truth_repo}`",
+            f"- Evaluation mode: `{decision.evaluation_mode}`",
+            f"- Comparability group: `{decision.comparability_group or 'UNSET'}`",
+            f"- Baseline round id: `{decision.baseline_round_id or 'UNSET'}`",
+            f"- Baseline commit sha: `{decision.baseline_commit_sha or 'UNSET'}`",
+            f"- Decision zone: `{decision.decision_zone}`",
+            f"- Stop window state: `{decision.stop_window_state}`",
+            f"- Manual review reasons: `{decision.manual_review_reasons}`",
+            f"- Insufficient evidence flags: `{decision.insufficient_evidence_flags}`",
+        ]
     return "\n".join(
         [
             "# Codex Analysis Request",
@@ -870,6 +1026,7 @@ def render_codex_request(
             f"- Decision status: `{decision.decision_status}`",
             f"- Target program: `{decision.target_program}`",
             f"- Controller notes: {decision.controller_notes}",
+            *formal_context_lines,
             "",
             "## 2. 本轮目标 run",
             f"- Run directory: `{relative_repo_path(run_dir)}`",
