@@ -83,6 +83,7 @@ def formal_round_extra_files(local_round_dir: Path) -> list[Path]:
         "benchmark_summary.json",
         "config_snapshot.json",
         "artifact_index.json",
+        "historical_baseline_summary.json",
         "comparability_report.json",
         "round_summary.json",
         "training_summary.txt",
@@ -177,6 +178,7 @@ def main() -> int:
             "project_name": project_name_for_mode(experiment_mode),
             "experiment_mode": experiment_mode,
             "source_of_truth_repo": decision_payload.get("source_of_truth_repo", ""),
+            "local_execution_repo_path": decision_payload.get("local_execution_repo_path", ""),
             "evaluation_mode": decision_payload.get("evaluation_mode", ""),
             "baseline_round_id": decision_payload.get("baseline_round_id"),
             "baseline_commit_sha": decision_payload.get("baseline_commit_sha"),
@@ -203,6 +205,7 @@ def main() -> int:
             "current_round_manifest": f"rounds/{round_id}/index_manifest.json",
             "experiment_mode": experiment_mode,
             "source_of_truth_repo": decision_payload.get("source_of_truth_repo", ""),
+            "local_execution_repo_path": decision_payload.get("local_execution_repo_path", ""),
             "evaluation_mode": decision_payload.get("evaluation_mode", ""),
             "decision_zone": decision_payload.get("decision_zone"),
             "stop_window_state": decision_payload.get("stop_window_state", {}),
@@ -235,7 +238,8 @@ def main() -> int:
         print(f"current_round={current_round_path.relative_to(exchange_dir)}")
         print(f"outbox={outbox_path.relative_to(exchange_dir)}")
 
-        commit_sha = ""
+        bundle_commit_sha = ""
+        final_commit_sha = ""
         if args.commit:
             run_git_command(exchange_dir, ["add", "."])
             status_result = run_git_command(exchange_dir, ["status", "--porcelain"])
@@ -243,24 +247,26 @@ def main() -> int:
                 print("status=no_changes")
                 return 0
             run_git_command(exchange_dir, ["commit", "-m", f"Publish {round_id}"])
-            commit_sha = run_git_command(exchange_dir, ["rev-parse", "HEAD"]).stdout.strip()
-            current_round_payload["last_exchange_commit_sha"] = commit_sha
+            bundle_commit_sha = run_git_command(exchange_dir, ["rev-parse", "HEAD"]).stdout.strip()
+            current_round_payload["last_exchange_commit_sha"] = bundle_commit_sha
             write_json_file(current_round_path, current_round_payload)
             run_git_command(exchange_dir, ["add", "CURRENT_ROUND.json"])
             status_result = run_git_command(exchange_dir, ["status", "--porcelain"])
             if status_result.stdout.strip():
                 run_git_command(exchange_dir, ["commit", "-m", f"Update CURRENT_ROUND anchor for {round_id}"])
+            final_commit_sha = run_git_command(exchange_dir, ["rev-parse", "HEAD"]).stdout.strip()
             if args.push:
                 run_git_command(exchange_dir, ["push", "origin", args.branch])
 
-        if commit_sha:
+        if bundle_commit_sha:
             from automation_protocol import update_round_state_file
 
             update_round_state_file(
                 local_round_dir / "round_state.json",
-                source_exchange_commit_sha=commit_sha,
+                source_exchange_commit_sha=final_commit_sha or bundle_commit_sha,
             )
-            print(f"commit_sha={commit_sha}")
+            print(f"bundle_commit_sha={bundle_commit_sha}")
+            print(f"final_commit_sha={final_commit_sha or bundle_commit_sha}")
         return 0
     except ProtocolError as exc:
         print("status=error", file=sys.stderr)

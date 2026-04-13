@@ -302,6 +302,7 @@ def build_round_summary(
     round_id: str,
     experiment_mode: str,
     source_of_truth_repo: str,
+    local_execution_repo_path: str | None,
     run_dir: str,
     evaluation_mode: str,
     metric_snapshot: dict[str, Any],
@@ -427,10 +428,21 @@ def build_round_summary(
         "generated_at": now_iso(),
         "experiment_mode": experiment_mode,
         "source_of_truth_repo": source_of_truth_repo,
+        "local_execution_repo_path": local_execution_repo_path,
         "evaluation_mode": evaluation_mode,
         "run_dir": run_dir,
         "baseline_round_id": baseline_round_id,
         "baseline_commit_sha": baseline_commit_sha,
+        "historical_baseline_summary_path": (
+            "historical_baseline_summary.json" if historical_baseline_summary is not None else None
+        ),
+        "historical_calibration": {
+            "available": historical_baseline_summary is not None,
+            "insufficient_history_for_calibration": bool(
+                (historical_baseline_summary or {}).get("insufficient_history_for_calibration")
+            ),
+            "run_count_total": (historical_baseline_summary or {}).get("run_count_total"),
+        },
         "comparability_group": config_snapshot.get("comparability", {}).get("comparability_group"),
         "decision_zone": stop_window_state["decision_zone"],
         "stop_window_state": stop_window_state,
@@ -464,6 +476,7 @@ def render_codex_report(
         f"- Round id: `{round_summary['round_id']}`",
         f"- Experiment mode: `{round_summary['experiment_mode']}`",
         f"- Source of truth repo: `{round_summary['source_of_truth_repo']}`",
+        f"- Local execution repo path: `{round_summary.get('local_execution_repo_path') or 'UNSET'}`",
         f"- Target run: `{round_summary['run_dir']}`",
         f"- Baseline round id: `{round_summary.get('baseline_round_id') or 'UNSET'}`",
         f"- Baseline commit sha: `{round_summary.get('baseline_commit_sha') or 'UNSET'}`",
@@ -475,6 +488,7 @@ def render_codex_report(
         f"- Stop action: `{round_summary['stop_window_state']['recommended_action']}`",
         f"- Manual review reasons: {', '.join(round_summary['manual_review_reasons']) or 'NONE'}",
         f"- Insufficient evidence flags: {', '.join(round_summary['insufficient_evidence_flags']) or 'NONE'}",
+        f"- Historical calibration: `available={round_summary['historical_calibration']['available']}, insufficient_history_for_calibration={round_summary['historical_calibration']['insufficient_history_for_calibration']}`",
         "",
         "## 3. Verdicts",
         f"- Primary verdict: `{verdicts['primary_metric_verdict']}`",
@@ -515,6 +529,7 @@ def render_formal_gpt_input(
     comparability_report: dict[str, Any],
     metric_snapshot: dict[str, Any],
     benchmark_summary: dict[str, Any],
+    historical_baseline_summary: dict[str, Any] | None = None,
 ) -> str:
     verdicts = round_summary["verdicts"]
     stop_window_state = round_summary["stop_window_state"]
@@ -529,6 +544,7 @@ def render_formal_gpt_input(
             f"- Round id: `{round_summary['round_id']}`",
             f"- Experiment mode: `{round_summary['experiment_mode']}`",
             f"- Source of truth repo: `{round_summary['source_of_truth_repo']}`",
+            f"- Local execution repo path: `{round_summary.get('local_execution_repo_path') or 'UNSET'}`",
             f"- Round state status: `{round_state.get('status', 'UNSET')}`",
             f"- Run directory: `{round_summary['run_dir']}`",
             f"- Target program: `{decision.get('target_program', 'UNSET')}`",
@@ -539,6 +555,7 @@ def render_formal_gpt_input(
             f"- Baseline round id: `{round_summary.get('baseline_round_id') or 'UNSET'}`",
             f"- Baseline commit sha: `{round_summary.get('baseline_commit_sha') or 'UNSET'}`",
             f"- Checks: `{comparability_report.get('checks', {})}`",
+            f"- Historical calibration: `available={round_summary['historical_calibration']['available']}, insufficient_history_for_calibration={round_summary['historical_calibration']['insufficient_history_for_calibration']}`",
             "",
             "## 3. Metric Verdict Layer",
             f"- Primary verdict: `{verdicts['primary_metric_verdict']}`",
@@ -563,6 +580,7 @@ def render_formal_gpt_input(
             "## 6. Manual Review / Evidence Gaps",
             f"- manual_review_reasons: {', '.join(round_summary['manual_review_reasons']) or 'NONE'}",
             f"- insufficient_evidence_flags: {', '.join(round_summary['insufficient_evidence_flags']) or 'NONE'}",
+            f"- historical_baseline_summary: `path={round_summary.get('historical_baseline_summary_path') or 'UNSET'}, run_count_total={(historical_baseline_summary or {}).get('run_count_total')}, insufficient_history_for_calibration={(historical_baseline_summary or {}).get('insufficient_history_for_calibration')}`",
             "",
             "## 7. What GPT Should Output",
             "- Read `docs/reading_order.md`, `docs/current_mainline.md`, `docs/evaluation_charter.md`, and `docs/output_contract.md` before drafting the next decision.",
@@ -577,6 +595,7 @@ def load_formal_bundle(round_dir: Path) -> dict[str, Any]:
     benchmark_summary = read_json(round_dir / "benchmark_summary.json")
     config_snapshot = read_json(round_dir / "config_snapshot.json")
     artifact_index = read_json(round_dir / "artifact_index.json")
+    historical_baseline_summary = maybe_read_json(round_dir / "historical_baseline_summary.json")
     comparability_report = maybe_read_json(round_dir / "comparability_report.json")
     round_summary = maybe_read_json(round_dir / "round_summary.json")
     return {
@@ -584,6 +603,7 @@ def load_formal_bundle(round_dir: Path) -> dict[str, Any]:
         "benchmark_summary": benchmark_summary,
         "config_snapshot": config_snapshot,
         "artifact_index": artifact_index,
+        "historical_baseline_summary": historical_baseline_summary,
         "comparability_report": comparability_report,
         "round_summary": round_summary,
     }

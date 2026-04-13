@@ -1,476 +1,136 @@
 # Codex UI Bridge Demo
 
-这是一个独立于当前 DRL 主工程的本地自动化 demo 仓库。当前仓库里有三层彼此分开的内容：
+这个仓库现在是一个本地控制面仓库，不再是 `fake_train.py` 单一演示仓库。它同时承载两种模式：
 
-1. `demo_codex_bridge.py`
-   本地 Codex GUI 通信 demo。通过 Windows UI Automation 和少量键鼠模拟，与已经打开的 Codex 桌面应用交互。
-2. `fake_train.py + scheduler.py`
-   假训练 + 完成检测 demo。通过假训练脚本逐步生成训练样式产物，再由最小调度器判断“训练是否完成”。
-3. 协议层 / round 层
-   通过 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`gpt_input.md`、`tuning_policy.md`、`prepare_round.py`、`prepare_gpt_input.py` 把控制平面协议和文件握手层搭起来。
+- `synthetic_rehearsal`
+  - 用于保留原有演示链路与 GUI bridge 验证
+- `formal_train`
+  - 用于接入真实训练工程 `train_q_agent.py`
+  - 以结构化 formal artifact 驱动 comparability、round verdict、publish 和 GPT 决策输入
 
-当前仓库通过 **GitHub 交换仓库 (Exchange Mode)** 与网页端 GPT 进行高效率协同，实现了可验证的半自动路线：
+当前主叙事是 `formal_train`，rehearsal 只是兼容模式。
 
-1. 本地生成真实的训练产物与分析报告。
-2. 将控制面协议文件同步至 GitHub 交换仓库。
-3. 网页端 GPT 基于交换仓库的文件进行决策，产出下一轮 JSON。
-4. 本地工具导入决策并开启新一轮。
+## 角色分工
 
-## 依赖安装
+- `../代码1`
+  - 正式训练事实源
+  - 真实入口：`train_q_agent.py`
+  - 真实 formal artifact：`metric_snapshot.json`、`benchmark_summary.json`、`config_snapshot.json`、`artifact_index.json`
+- 当前仓库
+  - 本地控制面、round 协议、formal bundle 构建、comparability、exchange publish
+- `../RRL_test`
+  - 公开交换仓库
+  - 新 GPT 聊天读取长期上下文和当前 round 的入口
 
-建议使用你本机已有的 Python 环境：
+## 当前协议要点
 
-```bash
-pip install -r requirements.txt
-```
+- schema 版本：`2.0`
+- 支持模式：`synthetic_rehearsal`、`formal_train`
+- formal 决策动作：
+  - `run_next_round`
+  - `stop_experiment`
+  - `pause_for_manual_review`
+  - `analyze_only`
+- formal 决策必须先过 comparability，再谈提升/退化/平台期
+- exchange-facing `source_of_truth_repo` 使用仓库身份，例如 `dk0113-Y/DRL-path-finding`
+- 本地执行路径单独写在 `local_execution_repo_path`
 
-当前依赖：
+## 关键脚本
 
-- `uiautomation`
-- `pyperclip`
-- `matplotlib`
-
-## 当前文件说明
-
-- `demo_codex_bridge.py`
-  Codex GUI 通信主脚本。支持 `--inspect-ui`、`--send-only`、`--demo`、`--dry-run`、`--manual-confirm-send`，并支持通过 `--message-file` / `--message-text` 发送任意文本。当前 `--send-only --message-file` / `--message-text` 会做最小送达确认。
-- `config.json`
-  Codex GUI 定位与等待参数。
-- `config_new_thread.json`
-  与 `config.json` 基本一致，但会先点击 `新线程`，便于把自动发送隔离到新的会话中。
-- `fake_train.py`
-  生成单次假训练输出。会在 `outputs/<run_name>/` 下逐步写入 `checkpoints/`、`logs/`、`plots/`。
-- `scheduler.py`
-  最小调度器。支持直参模式和 `--decision-file` 模式。它自己启动 `fake_train.py` 子进程，等待新的 run 目录出现，再等待子进程退出，最后做关键产物校验。
 - `automation_protocol.py`
-  协议层 helper。定义 decision schema、round 编号、模板读取、decision 校验、`codex_request.md` 渲染等辅助函数。
-- `prepare_round.py`
-  round 初始化工具。创建 `automation_rounds/round_0001/` 这种目录，并放入 `gpt_decision.json`、`codex_request.md`、`codex_report.md`、`gpt_input.md`、`round_state.json`。
+  - dual-mode schema、decision/round_state 读写、协议校验、GPT/Codex 文本渲染
+- `scheduler.py`
+  - 根据 `gpt_decision.json` 启动训练
+  - rehearsal 可跑 `fake_train.py`
+  - formal 可跑 `train_q_agent.py`
+- `build_exchange_bundle.py`
+  - 从真实 `outputs/<run>/` 构建 formal round bundle
+  - 会纳入 `historical_baseline_summary.json`
+  - 会把 exchange-facing JSON 的 truth repo 统一成 repo identity
+- `comparability.py`
+  - 结构化 comparability 检查
+  - 读取 `observed_run_contract`，检查 `final_env_steps`、`train_steps_header`、`eval_metrics_header`、`final_probe_header`
+- `formal_round_summary.py`
+  - 输出 structured verdict、stop window、manual review reasons、evidence gaps
 - `prepare_gpt_input.py`
-  GPT 输入包生成工具。读取 round 下的 decision / state / request / report，并生成给 GPT 消费的 `gpt_input.md`。
-- `templates/gpt_decision.template.json`
-  `gpt_decision.json` 模板。
-- `templates/codex_report.template.md`
-  `codex_report.md` 模板。
-- `tuning_policy.md`
-  当前自动化骨架允许的调参字段、记录方式和待补充项模板。
-- `logs/`
-  Codex GUI bridge 的 inspect / run 日志目录。
-- `outputs/`
-  假训练 run 输出目录。该目录已加入 `.gitignore`。
-- `automation_rounds/`
-  协议层 round 运行目录。该目录已加入 `.gitignore`，运行时由 `prepare_round.py` 创建。
-
-## 第一层：Codex GUI 通信 demo
-
-目标链路：
-
-1. 聚焦本地 `Codex` 窗口
-2. 定位底部聊天 composer
-3. 自动粘贴一条只要求返回 ack token 的消息
-4. 等待 Codex 回复
-5. 通过 UI Automation 读取可见文本并搜索 token
-6. 把发送内容、期望 token、检测到的回复、成功/失败状态写入本地日志
-
-### 运行方式
-
-1. 先做 UI 探测
-
-```bash
-python demo_codex_bridge.py --inspect-ui
-```
-
-2. 只发送，不等待
-
-```bash
-python demo_codex_bridge.py --send-only
-```
-
-也可以直接发送任意 Markdown / 文本，并做最小送达确认：
-
-```bash
-python demo_codex_bridge.py --send-only --message-file automation_rounds/round_0001/codex_request.md --config config_new_thread.json
-```
-
-3. 完整 demo
-
-```bash
-python demo_codex_bridge.py --demo
-```
-
-4. 粘贴后手工确认再发送
-
-```bash
-python demo_codex_bridge.py --demo --manual-confirm-send
-```
-
-5. 只打印动作，不真正发送
-
-```bash
-python demo_codex_bridge.py --demo --dry-run
-```
-
-### 当前限制
-
-1. 当前 Codex 桌面 UI 的聊天输入区并没有稳定暴露成标准 `EditControl`。
-2. 发送按钮通常只能通过“与 `添加文件等` 同一行的最右侧按钮”推断。
-3. 回复读取优先走 `RootWebArea` 下的 `TextControl`，失败后才回退到剪贴板复制。
-4. `status=sent_only` 现在表示“消息已发送并通过最小送达确认”；如果只是粘贴成功但未确认送达，会返回 `send_not_confirmed`。
-5. 当前 bridge demo 仍是本地 GUI 自动化验证。建议使用 **Exchange Mode** 及其配套 Bridge 实现高可靠协作。
-
-## 第二层：假训练 + 最小调度器 demo
-
-当前 phase 1 的目标只有两个：
-
-1. 验证假训练输出能否对齐真实训练的顶层目录风格
-2. 验证 `scheduler.py` 能否可靠判断“它自己启动的训练子进程已经完成”
-
-这里的“训练完成”不是通过发现 `outputs/` 下有新文件来判定，而是同时要求：
-
-1. 调度器启动的训练子进程正常退出
-2. 对应 run 目录中的关键产物完整
-
-### 假训练输出结构
-
-`fake_train.py` 会在仓库根目录生成：
-
-```text
-outputs/<run_name>/
-  checkpoints/
-  logs/
-  plots/
-```
-
-其中 `run_name` 风格如下：
-
-```text
-sched_turn003_revisit010_entry8_20260411_014043
-```
-
-顶层子目录固定对齐为：
-
-- `checkpoints/`
-- `logs/`
-- `plots/`
-
-`logs/` 下会逐步写入：
-
-- `train_steps.csv`
-- `train_episodes.csv`
-- `eval_metrics.csv`
-- `final_probe.csv`
-
-`plots/` 下会周期性刷新：
-
-- `reward_curve.png`
-- `coverage_curve.png`
-- `success_rate_curve.png`
-- `loss_curve.png`
-
-`checkpoints/` 下会在结束时补齐：
-
-- `best.pt`
-- `last.pt`
-
-### 运行方式
-
-直接运行假训练：
-
-```bash
-python fake_train.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
-```
-
-通过最小调度器运行并校验：
-
-```bash
-python scheduler.py --turn-penalty 0.03 --revisit-penalty 0.10 --entry-k 8
-```
-
-### 当前边界
-
-1. `scheduler.py` 当前只检测它自己启动的训练子进程，不负责接管任意外部训练任务。
-2. `scheduler.py` 当前可以选择性调用 `demo_codex_bridge.py` 把 `codex_request.md` 单向发给本地 Codex，但不会自动读回报告。
-3. 当前 phase 只验证“训练输出形态”“完成检测逻辑”“request 单向发送”，不是完整自动决策系统。
-
-## 第三层：协议层 / round 层
-
-这一层的目标是把未来自动化链路的控制平面协议搭起来：
-
-`GPT -> gpt_decision.json -> scheduler 启动训练 -> 训练完成 -> scheduler 生成 codex_request.md -> 后续由 bridge 发给 Codex -> Codex 产出 codex_report.md -> 后续再交回 GPT`
-
-当前未实现的环节：
-
-- OpenAI API (当前保持高效的网页端交互)
-- Codex 自动写回 `codex_report.md` (仍需人工或单项触发)
-- 完全无人值守的全自动闭环 (当前采用 Exchange Mode 实现可验证的触发式自动化)
-
-当前只实现到：
-
-- `prepare_round.py` 创建 round 目录和模板文件
-- 每个 round 目录会有一份 `round_state.json` 记录真实 lineage / run 状态
-- `scheduler.py --decision-file ...` 读取 `gpt_decision.json`
-- 训练成功后由 scheduler 自动生成 `codex_request.md`
-- `previous_round_run` 会自动解析为上一轮成功 run 的真实路径
-- `best_known_reference` 可由 `gpt_decision.json.reference_targets.best_known_reference` 显式提供
-- round 目录中预置 `codex_report.md` 模板
-- `prepare_gpt_input.py` 可在 `codex_report.md` 有真实内容后生成 `gpt_input.md`
-- 可选地由 scheduler 自动调用 bridge，把 request 单向发送到本地 Codex
-
-### round 目录结构
-
-`prepare_round.py` 默认会创建：
-
-```text
-automation_rounds/round_0001/
-  gpt_decision.json
-  codex_request.md
-  codex_report.md
-  gpt_input.md
-  round_state.json
-```
-
-### 运行方式
-
-初始化一个新的 round：
-
-```bash
-python prepare_round.py
-```
-
-也可以显式指定 round id：
-
-```bash
-python prepare_round.py --round-id round_0003
-```
-
-用 decision file 驱动 scheduler：
-
-```bash
-python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json
-```
-
-在训练成功后，把生成的 `codex_request.md` 自动发送到本地已打开的 Codex：
-
-```bash
-python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json --invoke-codex-bridge
-```
-
-调试版：
-
-```bash
-python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json --invoke-codex-bridge --bridge-manual-confirm-send
-```
-
-当 `codex_report.md` 已经有真实内容后，生成给 GPT 使用的输入包：
-
-```bash
-python prepare_gpt_input.py --round-id round_0001
-```
-
-### 第五层：网页端 GPT 桥接 (ChatGPT Web Bridge)
-
-这一层提供了与 ChatGPT 网页端交互的能力，用于获取 GPT 的决策回复并提取 JSON。
-
-#### 推荐方案：`exchange_web_bridge.py` (Exchange Mode 专用)
-这是目前 **Exchange Mode 推荐的网页桥接入口**。它专门针对 GitHub 交换仓库设计，支持自动读取索引消息、自动抓回回复并一键导入决策。
-
-#### 兼容方案：`chatgpt_web_bridge.py` (旧 File-Push 路径)
-这是 **旧版本的兼容路径**，不再推荐作为自动化的主线入口。它依然保留用于支持传统的、基于本地文件的推送模式。
-
-#### 运行示例 (兼容方案)
-
-1. 环境准备：
-```bash
-pip install playwright
-playwright install chromium
-```
-
-2. 发送请求并获取回复：
-```bash
-python chatgpt_web_bridge.py --round-id round_0013 --headless false
-```
-
-3. 提取 Decision JSON：
-```bash
-python extract_gpt_decision.py --round-id round_0013
-```
-
-4. 导入为下一轮：
-```bash
-python ingest_gpt_decision.py --input-file automation_rounds/round_0013/next_gpt_decision.json --source-round-id round_0013
-```
-
-#### 限制说明
-- 此 bridge 不会自动登录。建议使用 `--profile-dir` 复用已登录的浏览器配置。
-- 判定回复完成采用务实策略（如停止生成按钮消失），若不稳定会直接报错。
-- 不会自动触发下一轮训练，仅完成文件层面的桥接。
-
-### 第六层：GitHub 交换模式 (GitHub Exchange Mode)
-
-这是当前推荐的闭环主线。它通过一个公开的 GitHub 交换仓库（如 `dk0113-Y/RRL_test`）作为长期上下文和 GPT 阅读入口。
-
-#### 核心逻辑
-- **本地执行面**：负责真实训练、文件生成和状态维护。
-- **GitHub 交换面**：负责存放控制面材料（Manifest, Summary, Decision, Request, Report）。
-- **GPT 分析面**：GPT 通过索引消息定位交换仓库，阅读文件并给出下一轮决策。
-
-#### 运行示例
-
-1. 将本地 round 导出并推送至交换仓库：
-```bash
-python publish_round_to_exchange.py --round-id round_0013 --exchange-repo-dir ../RRL_test --repo-url https://github.com/dk0113-Y/RRL_test --commit --push
-```
-
-2. 发送索引消息：
-此时交换仓库的 `outbox/web_index_message_round_0013.md` 中已生成一条短消息，将其复制发送给网页端 GPT。
-
-3. 导入 GPT 决策：
-将 GPT 返回的 JSON 保存为本地文件，然后运行：
-```bash
-python ingest_exchange_decision.py --input-file tmp/next_decision.json --source-round-id round_0013 --exchange-repo-dir ../RRL_test --sync-to-exchange
-```
-
-#### 核心工具说明
-- `publish_round_to_exchange.py`：发布本地 round，生成索引消息。
-- `exchange_web_bridge.py`：自动化网页交互与结果抓取。
-- `ingest_exchange_decision.py`：导入交换决策，支持占位符解析。
-- `extract_gpt_decision.py`：通用决策提取工具，支持新的格式边界。
-
-### 第七层：GPT 输出接入下一轮 round (Decision Ingest)
-
-这一层闭合了“GPT 产出决策 -> 系统进入下一轮”的环路。用户只需将 GPT 的 JSON 输出保存到本地，即可通过工具自动初始化下一轮的所有协议文件。
-
-#### 运行方式
-
-把 GPT 产出的 JSON 导入为一个全新的 round：
-
-```bash
-python ingest_gpt_decision.py --input-file tmp/next_decision.json --source-round-id round_0011
-```
-
-参数说明：
-- `--input-file`：必需，指向 GPT 产出的 JSON 文件。
-- `--target-round-id`：可选，指定目标 round id；不传时自动取下一个。
-- `--source-round-id`：可选，记录该决策是基于哪一轮的输入生成的（会存入 `round_state.json`）。
-- `--force`：可选，允许覆盖已存在的 round 目录。
-
-#### 核心行为
-1. 读取并验证 JSON 是否符合协议 schema。
-2. 自动创建新的 round 目录。
-3. 将 `round_id` 自动修正为目标 round id 并写入 `gpt_decision.json`。
-4. 初始化同目录下的 `codex_request.md`、`codex_report.md`、`gpt_input.md` 为模板/占位状态。
-5. 在 `round_state.json` 中记录 `source_round_id` 建立血缘关系。
-
-### `gpt_decision.json` 的最小 schema
-
-当前协议层至少包含这些字段：
-
-- `schema_version`
-- `round_id`
-- `decision_status`
-- `target_program`
-- `run_args`
-- `parameter_changes`
-- `codex_analysis_focus`
-- `reference_targets`
-- `controller_notes`
+  - 优先基于 formal JSON 生成 GPT 输入包
+- `publish_round_to_exchange.py`
+  - 发布 round 到 `../RRL_test`
+  - 会同步 `CURRENT_ROUND.json`、`index_manifest.json`、outbox 消息，并写回非空 `last_exchange_commit_sha`
+
+## formal_train 产物要求
+
+formal round bundle 至少包含：
+
+- `metric_snapshot.json`
+- `benchmark_summary.json`
+- `config_snapshot.json`
+- `artifact_index.json`
+- `historical_baseline_summary.json`（若可获得；不足时也会显式标注 `insufficient_history_for_calibration`）
+- `comparability_report.json`
+- `round_summary.json`
 
 其中：
 
-- `decision_status` 当前允许：`run_next_round`、`hold`、`stop`
-- `target_program` 当前实际支持的是 `fake_train.py`
-- `run_args` 当前映射到 `fake_train.py` 的参数
-- `codex_analysis_focus` 用于后续生成结构化 `codex_request.md`
-- `reference_targets.best_known_reference` 可显式指定基线 / 参考 run
-- `reference_targets.manual_compare_targets` 可追加其它比较对象
+- `config_snapshot.json`
+  - 必须带 `observed_run_contract`
+  - 当前至少包括：
+    - `final_env_steps`
+    - `train_steps_header`
+    - `eval_metrics_header`
+    - `final_probe_header`
+- `comparability_report.json`
+  - 用这些 observed contract 字段做结构化 comparability 判断
+- `round_summary.json`
+  - 提供 `primary_metric_verdict`
+  - `secondary_metric_verdict`
+  - `stability_verdict`
+  - `efficiency_verdict`
+  - `overall_round_verdict`
+  - `decision_zone`
+  - `stop_window_state`
 
-### `round_state.json` 的作用
+## 常用流程
 
-现在每个 round 目录都会有一份 `round_state.json`，它用于记录：
+### 1. 准备或运行一轮
 
-- 当前 round 的状态
-- 对应的真实 `run_dir`
-- 训练返回码
-- bridge 是否被调用以及调用结果
-- 对应的 `gpt_input.md` 路径
+```bash
+python prepare_round.py
+python scheduler.py --decision-file automation_rounds/round_0001/gpt_decision.json
+```
 
-系统会通过这些 state 文件建立最小 lineage：
+### 2. 从真实 run 构建 formal round
 
-- `previous_round_run` 会自动解析为“当前 round 之前最近一个成功 round”的真实 `run_dir`
-- 如果找不到上一轮成功 run，`codex_request.md` 会写出明确的未解析说明
-- 如果 `best_known_reference` 没在 `gpt_decision.json` 中提供，`codex_request.md` 也会写出明确未解析说明，而不是保留裸占位符
+```bash
+python build_exchange_bundle.py ^
+  --round-id round_0023 ^
+  --run-dir ../代码1/outputs/<run_name> ^
+  --baseline-run-dir ../代码1/outputs/<baseline_run_name> ^
+  --baseline-round-id round_0022 ^
+  --force
+```
 
-### `codex_request.md` 的作用
+### 3. 生成 GPT 输入包
 
-`scheduler.py` 在 `decision_status=run_next_round` 且训练完成校验成功后，会结合：
+```bash
+python prepare_gpt_input.py --round-id round_0023
+```
 
-- 本轮 `gpt_decision.json`
-- 实际检测到的 `run_dir`
-- 已解析的 compare targets
+### 4. 发布到交换仓库
 
-自动渲染 `codex_request.md`。这个文件是给后续 bridge / Codex 使用的固定握手面，不应该再重新发明协议。
+```bash
+python publish_round_to_exchange.py ^
+  --round-id round_0023 ^
+  --exchange-repo-dir ../RRL_test ^
+  --repo-url https://github.com/dk0113-Y/RRL_test ^
+  --branch main ^
+  --force ^
+  --commit ^
+  --push
+```
 
-当前 `scheduler.py` 还可以在 `codex_request.md` 写出后，选择性自动调用 `demo_codex_bridge.py`，把这份 request 发送到本地 Codex 聊天窗口。
-这一步目前仍然只是单向发送 request，还没有实现分析结果自动读回、`codex_report.md` 自动回写或 GPT 决策回流。
+## reheasal 兼容边界
 
-### `codex_report.md` 的作用
-
-`codex_report.md` 当前只是模板 / stub，供后续 Codex 填写。当前仓库还没有自动生成该报告。
-
-### `gpt_input.md` 的作用
-
-`gpt_input.md` 是给后续 GPT 消费的标准输入包。它会把同一 round 中的：
-
-- `gpt_decision.json`
-- `round_state.json`
-- `codex_request.md`
-- `codex_report.md`
-
-整理成一份稳定 Markdown 文件，便于后续人工或自动发送给 GPT。
-
-`prepare_gpt_input.py` 会拒绝使用空模板状态的 `codex_report.md` 来生成 `gpt_input.md`。网页端 GPT 交互目前推荐使用 `exchange_web_bridge.py`，它已实现了从发送索引消息到解析回复的全链路闭合支撑。
-
-### `tuning_policy.md` 的作用
-
-`tuning_policy.md` 当前不是最终科研调参结论，只是：
-
-- 当前自动化 demo 已支持参数的结构化说明
-- 建议记录方式
-- 风险控制规则
-- 明确待补充项
-
-## Codex bridge 配置提示
-
-如果控件定位失败，优先调整这些配置：
-
-- `window_title_keyword`
-- `toolbar_anchor_button_name`
-- `scroll_to_bottom_button_name`
-- `composer_gap_top_px`
-- `composer_gap_bottom_px`
-- `composer_min_width_px`
-- `send_method`
-
-## Codex bridge 日志字段
-
-每次运行后的 JSON 日志至少会记录：
-
-- `started_at`
-- `sent_prompt`
-- `expected_token`
-- `detected_reply_text`
-- `success`
-- `status`
-- `message_probe`（`--send-only --message-file` / `--message-text` 时，默认取消息第一条非空行）
-- `message_probe_baseline_count`
-- `message_probe_post_paste_count`
-- `message_probe_post_send_count`
-- `send_confirmation_status`
-- `send_confirmation_reason`
-- `error` / `traceback`（失败时）
-
-其中 `--send-only --message-file` / `--message-text` 的状态语义是：
-
-- `sent_only` 表示文本已发送并通过最小送达确认。
-- `send_not_confirmed` 表示文本可能已经粘贴，但没有足够证据确认它已进入聊天记录区。
-- `send_confirmation_status` / `send_confirmation_reason` 用于记录最小确认的判定结果和原因。
+- `fake_train.py`、GUI bridge、旧 demo 仍然保留
+- 但 formal schema、formal docs、formal publish 不再默认绑定 rehearsal
+- 不允许再用 synthetic rehearsal 的指标语义去替代真实训练工程的 formal judgement

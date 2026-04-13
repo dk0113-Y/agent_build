@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -71,23 +72,186 @@ def ensure_required_run_artifacts(run_dir: Path) -> dict[str, Path]:
     return artifact_paths
 
 
-def copy_round_artifacts(*, artifact_paths: dict[str, Path], round_dir: Path) -> None:
+PATH_LIKE_KEYS = {
+    "run_dir",
+    "target_run_dir",
+    "baseline_run_dir",
+    "output_root",
+    "best_known_reference",
+}
+
+
+def repo_identity_from_remote_url(remote_url: str) -> str | None:
+    text = remote_url.strip()
+    if not text:
+        return None
+    if text.endswith(".git"):
+        text = text[:-4]
+    if "://" in text:
+        tail = text.split("://", 1)[1]
+        if "/" in tail:
+            return tail.split("/", 1)[1].strip("/") or None
+    if "@" in text and ":" in text:
+        return text.rsplit(":", 1)[1].strip("/") or None
+    cleaned = text.strip("/").replace("\\", "/")
+    return cleaned or None
+
+
+def source_repo_identity(source_repo: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(source_repo),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception:
+        return source_repo.name
+    return repo_identity_from_remote_url(result.stdout) or source_repo.name
+
+
+def repo_relative_text(source_repo: Path, value: str | Path | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    path = Path(text)
+    if path.is_absolute():
+        try:
+            return path.resolve().relative_to(source_repo.resolve()).as_posix()
+        except ValueError:
+            return text
+    return Path(text).as_posix()
+
+
+def sanitize_exchange_payload(
+    payload: Any,
+    *,
+    source_repo: Path,
+    repo_identity: str,
+    local_execution_repo_path: str,
+    parent_key: str | None = None,
+) -> Any:
+    if isinstance(payload, dict):
+        sanitized: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key == "source_of_truth_repo":
+                sanitized[key] = repo_identity
+                continue
+            if key == "local_execution_repo_path":
+                sanitized[key] = local_execution_repo_path
+                continue
+            sanitized[key] = sanitize_exchange_payload(
+                value,
+                source_repo=source_repo,
+                repo_identity=repo_identity,
+                local_execution_repo_path=local_execution_repo_path,
+                parent_key=key,
+            )
+        if "source_of_truth_repo" in sanitized and "local_execution_repo_path" not in sanitized:
+            sanitized["local_execution_repo_path"] = local_execution_repo_path
+        return sanitized
+    if isinstance(payload, list):
+        return [
+            sanitize_exchange_payload(
+                item,
+                source_repo=source_repo,
+                repo_identity=repo_identity,
+                local_execution_repo_path=local_execution_repo_path,
+                parent_key=parent_key,
+            )
+            for item in payload
+        ]
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return payload
+        if parent_key == "source_of_truth_repo":
+            return repo_identity
+        if parent_key == "local_execution_repo_path":
+            return local_execution_repo_path
+        if parent_key in PATH_LIKE_KEYS or text.startswith(str(source_repo.resolve())):
+            relative = repo_relative_text(source_repo, text)
+            return relative if relative is not None else payload
+    return payload
+
+
+def ensure_historical_baseline_summary(source_repo: Path) -> Path | None:
+    summary_path = source_repo / "formal_artifacts" / "historical_baseline_summary.json"
+    if summary_path.exists():
+        return summary_path
+    script_path = source_repo / "tools" / "generate_historical_baseline_summary.py"
+    if not script_path.exists():
+        return None
+    try:
+        subprocess.run(
+            [sys.executable, str(script_path)],
+            cwd=str(source_repo),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise ProtocolError(
+            "Failed to generate historical_baseline_summary.json: "
+            f"{exc.stderr.strip() or exc.stdout.strip() or 'unknown error'}"
+        ) from exc
+    return summary_path if summary_path.exists() else None
+
+
+def copy_round_artifacts(
+    *,
+    artifact_paths: dict[str, Path],
+    round_dir: Path,
+    source_repo: Path,
+    repo_identity: str,
+    local_execution_repo_path: str,
+    historical_baseline_summary_path: Path | None,
+) -> None:
     for name, source_path in artifact_paths.items():
-        shutil.copy2(source_path, round_dir / name)
+        if source_path.suffix.lower() == ".json":
+            payload = read_json(source_path)
+            sanitized = sanitize_exchange_payload(
+                payload,
+                source_repo=source_repo,
+                repo_identity=repo_identity,
+                local_execution_repo_path=local_execution_repo_path,
+            )
+            write_json_file(round_dir / name, sanitized)
+        else:
+            shutil.copy2(source_path, round_dir / name)
     training_summary = artifact_paths["metric_snapshot.json"].parent / "training_summary.txt"
     if training_summary.exists():
-        shutil.copy2(training_summary, round_dir / "training_summary.txt")
+        training_summary_text = training_summary.read_text(encoding="utf-8")
+        source_repo_text = str(source_repo.resolve())
+        training_summary_text = training_summary_text.replace(f"{source_repo_text}\\", "")
+        training_summary_text = training_summary_text.replace(f"{source_repo_text}/", "")
+        training_summary_text = training_summary_text.replace(source_repo_text, repo_identity)
+        training_summary_text = training_summary_text.replace("\\", "/")
+        (round_dir / "training_summary.txt").write_text(training_summary_text, encoding="utf-8")
+    if historical_baseline_summary_path and historical_baseline_summary_path.exists():
+        sanitized_historical = sanitize_exchange_payload(
+            read_json(historical_baseline_summary_path),
+            source_repo=source_repo,
+            repo_identity=repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
+        )
+        write_json_file(round_dir / "historical_baseline_summary.json", sanitized_historical)
 
 
 def render_formal_codex_request(
     *,
     round_id: str,
     round_dir: Path,
-    run_dir: Path,
-    source_of_truth_repo: Path,
-    baseline_run_dir: Path | None,
+    run_dir: str,
+    source_of_truth_repo: str,
+    local_execution_repo_path: str,
+    baseline_run_dir: str | None,
     comparability_report: dict[str, Any],
     round_summary: dict[str, Any],
+    historical_baseline_summary_available: bool,
 ) -> str:
     tracked_files = [
         "metric_snapshot.json",
@@ -97,14 +261,17 @@ def render_formal_codex_request(
         "comparability_report.json",
         "round_summary.json",
     ]
+    if historical_baseline_summary_available:
+        tracked_files.append("historical_baseline_summary.json")
     lines = [
         "# Codex Analysis Request",
         "",
         "## 1. Formal Train Context",
         f"- Round id: `{round_id}`",
-        f"- Source of truth repo: `{source_of_truth_repo.resolve()}`",
-        f"- Target run directory: `{run_dir.resolve()}`",
-        f"- Baseline run directory: `{baseline_run_dir.resolve()}`" if baseline_run_dir else "- Baseline run directory: `UNSET`",
+        f"- Source of truth repo: `{source_of_truth_repo}`",
+        f"- Local execution repo path: `{local_execution_repo_path}`",
+        f"- Target run directory: `{run_dir}`",
+        f"- Baseline run directory: `{baseline_run_dir}`" if baseline_run_dir else "- Baseline run directory: `UNSET`",
         f"- Comparability status: `{comparability_report.get('comparability_status', 'UNSET')}`",
         f"- Decision zone: `{round_summary.get('decision_zone', 'UNSET')}`",
         "",
@@ -149,7 +316,9 @@ def build_decision_payload(
     args: argparse.Namespace,
     round_id: str,
     run_dir: Path,
-    source_of_truth_repo: Path,
+    source_of_truth_repo: str,
+    local_execution_repo_path: str,
+    source_repo_root: Path,
     baseline_run_dir: Path | None,
     config_snapshot: dict[str, Any],
     round_summary: dict[str, Any],
@@ -159,7 +328,8 @@ def build_decision_payload(
         "schema_version": "2.0",
         "round_id": round_id,
         "experiment_mode": "formal_train",
-        "source_of_truth_repo": str(source_of_truth_repo.resolve()),
+        "source_of_truth_repo": source_of_truth_repo,
+        "local_execution_repo_path": local_execution_repo_path,
         "decision_status": args.decision_status.strip() or round_summary["stop_window_state"]["recommended_action"],
         "evaluation_mode": "formal_artifact_review",
         "comparability_group": get_comparability_group(config_snapshot),
@@ -173,7 +343,7 @@ def build_decision_payload(
         "run_args": {
             "cli_args": cli_args,
             "run_name": run_dir.name,
-            "output_root": str(run_dir.parent.resolve()),
+            "output_root": repo_relative_text(source_repo_root, run_dir.parent),
             "notes": "Imported historical formal run bundle; rerun only after comparability review.",
         },
         "parameter_changes": [],
@@ -196,7 +366,7 @@ def build_decision_payload(
             "expected_output_style": "Write a structured Markdown report grounded in the formal JSON artifacts.",
         },
         "reference_targets": {
-            "best_known_reference": str(baseline_run_dir.resolve()) if baseline_run_dir else None,
+            "best_known_reference": repo_relative_text(source_repo_root, baseline_run_dir) if baseline_run_dir else None,
             "manual_compare_targets": [],
         },
         "controller_notes": default_controller_notes(args, run_dir),
@@ -208,12 +378,19 @@ def main() -> int:
     try:
         round_id = normalize_round_id(args.round_id)
         source_of_truth_repo = args.source_of_truth_repo.resolve()
+        source_of_truth_repo_identity = source_repo_identity(source_of_truth_repo)
+        local_execution_repo_path = str(source_of_truth_repo)
         run_dir = args.run_dir.resolve()
         if not run_dir.exists():
             raise ProtocolError(f"Run directory does not exist: {run_dir}")
+        run_dir_exchange_path = repo_relative_text(source_of_truth_repo, run_dir) or run_dir.name
 
         target_artifact_paths = ensure_required_run_artifacts(run_dir)
         baseline_run_dir = args.baseline_run_dir.resolve() if args.baseline_run_dir else None
+        baseline_run_dir_exchange_path = (
+            repo_relative_text(source_of_truth_repo, baseline_run_dir)
+            if baseline_run_dir else None
+        )
         baseline_artifact_paths = ensure_required_run_artifacts(baseline_run_dir) if baseline_run_dir else None
 
         target_metric_snapshot = read_json(target_artifact_paths["metric_snapshot.json"])
@@ -233,29 +410,34 @@ def main() -> int:
             read_json(baseline_artifact_paths["config_snapshot.json"])
             if baseline_artifact_paths else None
         )
-        historical_baseline_summary = maybe_read_json(
-            source_of_truth_repo / "formal_artifacts" / "historical_baseline_summary.json"
-        )
+        historical_baseline_summary_path = ensure_historical_baseline_summary(source_of_truth_repo)
+        historical_baseline_summary = maybe_read_json(historical_baseline_summary_path)
 
         comparability_report = build_comparability_report(
             round_id=round_id,
             experiment_mode="formal_train",
-            source_of_truth_repo=str(source_of_truth_repo),
-            target_run_dir=str(run_dir),
+            source_of_truth_repo=source_of_truth_repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
+            target_run_dir=run_dir_exchange_path,
             target_metric_snapshot=target_metric_snapshot,
             target_benchmark_summary=target_benchmark_summary,
             target_config_snapshot=target_config_snapshot,
             baseline_round_id=args.baseline_round_id,
-            baseline_run_dir=str(baseline_run_dir) if baseline_run_dir else None,
+            baseline_run_dir=baseline_run_dir_exchange_path,
             baseline_metric_snapshot=baseline_metric_snapshot,
             baseline_benchmark_summary=baseline_benchmark_summary,
             baseline_config_snapshot=baseline_config_snapshot,
+            historical_baseline_summary=historical_baseline_summary,
+            historical_baseline_summary_path=(
+                "historical_baseline_summary.json" if historical_baseline_summary else None
+            ),
         )
         round_summary = build_round_summary(
             round_id=round_id,
             experiment_mode="formal_train",
-            source_of_truth_repo=str(source_of_truth_repo),
-            run_dir=str(run_dir),
+            source_of_truth_repo=source_of_truth_repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
+            run_dir=run_dir_exchange_path,
             evaluation_mode="formal_artifact_review",
             metric_snapshot=target_metric_snapshot,
             benchmark_summary=target_benchmark_summary,
@@ -273,7 +455,9 @@ def main() -> int:
             args=args,
             round_id=round_id,
             run_dir=run_dir,
-            source_of_truth_repo=source_of_truth_repo,
+            source_of_truth_repo=source_of_truth_repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
+            source_repo_root=source_of_truth_repo,
             baseline_run_dir=baseline_run_dir,
             config_snapshot=target_config_snapshot,
             round_summary=round_summary,
@@ -285,18 +469,27 @@ def main() -> int:
             source_round_id=args.source_round_id,
             force=args.force,
         )
-        copy_round_artifacts(artifact_paths=target_artifact_paths, round_dir=round_dir)
+        copy_round_artifacts(
+            artifact_paths=target_artifact_paths,
+            round_dir=round_dir,
+            source_repo=source_of_truth_repo,
+            repo_identity=source_of_truth_repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
+            historical_baseline_summary_path=historical_baseline_summary_path,
+        )
         write_json_file(round_dir / "comparability_report.json", comparability_report)
         write_json_file(round_dir / "round_summary.json", round_summary)
 
         codex_request_text = render_formal_codex_request(
             round_id=round_id,
             round_dir=round_dir,
-            run_dir=run_dir,
-            source_of_truth_repo=source_of_truth_repo,
-            baseline_run_dir=baseline_run_dir,
+            run_dir=run_dir_exchange_path,
+            source_of_truth_repo=source_of_truth_repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
+            baseline_run_dir=baseline_run_dir_exchange_path,
             comparability_report=comparability_report,
             round_summary=round_summary,
+            historical_baseline_summary_available=historical_baseline_summary is not None,
         )
         (round_dir / "codex_request.md").write_text(codex_request_text, encoding="utf-8")
         (round_dir / "codex_report.md").write_text(
@@ -313,12 +506,13 @@ def main() -> int:
                 decision=decision_payload,
                 round_state={
                     "status": "success",
-                    "run_dir": str(run_dir),
+                    "run_dir": run_dir_exchange_path,
                 },
                 round_summary=round_summary,
                 comparability_report=comparability_report,
                 metric_snapshot=target_metric_snapshot,
                 benchmark_summary=target_benchmark_summary,
+                historical_baseline_summary=historical_baseline_summary,
             ),
             encoding="utf-8",
         )
@@ -326,10 +520,11 @@ def main() -> int:
         update_round_state_file(
             round_dir / "round_state.json",
             experiment_mode="formal_train",
-            source_of_truth_repo=source_of_truth_repo,
+            source_of_truth_repo=source_of_truth_repo_identity,
+            local_execution_repo_path=local_execution_repo_path,
             evaluation_mode="formal_artifact_review",
             status="success",
-            run_dir=run_dir,
+            run_dir=run_dir_exchange_path,
             training_return_code=0,
             bridge_invoked=False,
             bridge_status="not_invoked",

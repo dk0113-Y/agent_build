@@ -8,7 +8,8 @@ DECISION_JSON_BEGIN
   "schema_version": "2.0",
   "round_id": "round_xxxx",
   "experiment_mode": "formal_train",
-  "source_of_truth_repo": "../代码1",
+  "source_of_truth_repo": "dk0113-Y/DRL-path-finding",
+  "local_execution_repo_path": "../代码1",
   "decision_status": "pause_for_manual_review",
   "evaluation_mode": "formal_artifact_review",
   "comparability_group": "formal_mainline_v1__example",
@@ -66,7 +67,7 @@ DECISION_JSON_END
 ## Required Rules
 
 1. `experiment_mode` must be either `synthetic_rehearsal` or `formal_train`.
-2. Formal rounds must keep `source_of_truth_repo` pointed at the real training repository and must treat comparability as a gate, not a note.
+2. Formal rounds must keep `source_of_truth_repo` as the real training repository identity and may use `local_execution_repo_path` only for local controller execution.
 3. `decision_status` must be one of `run_next_round`, `stop_experiment`, `pause_for_manual_review`, or `analyze_only`.
 4. `decision_zone`, `stop_window_state`, `manual_review_reasons`, and `insufficient_evidence_flags` must stay aligned with the verdicts in the round summary.
 5. If comparability failed or evidence is insufficient, do not emit a payload that implies a positive formal improvement claim.

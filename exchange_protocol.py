@@ -100,6 +100,7 @@ def load_round_summary(local_round_dir: Path, decision_payload: dict[str, Any], 
         "generated_at": get_now_iso(),
         "experiment_mode": decision_payload.get("experiment_mode", "synthetic_rehearsal"),
         "source_of_truth_repo": decision_payload.get("source_of_truth_repo", ""),
+        "local_execution_repo_path": decision_payload.get("local_execution_repo_path", ""),
         "evaluation_mode": decision_payload.get("evaluation_mode", "synthetic_oracle"),
         "run_dir": round_state.get("run_dir", ""),
         "baseline_round_id": decision_payload.get("baseline_round_id"),
@@ -138,6 +139,7 @@ def build_web_index_message(
             f"Required reading order:\n{entry_docs}\n\n"
             f"After the docs, read `CURRENT_ROUND.json`, then `{manifest_path}`, then the structured round files "
             f"(`metric_snapshot.json`, `benchmark_summary.json`, `config_snapshot.json`, `artifact_index.json`, "
+            f"`historical_baseline_summary.json`, "
             f"`comparability_report.json`, `round_summary.json`).\n\n"
             f"Formal judgement rules:\n"
             f"- Treat the real training repository artifacts as the only source of truth.\n"

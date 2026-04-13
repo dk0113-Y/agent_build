@@ -84,6 +84,7 @@ class GPTDecision:
     round_id: str
     experiment_mode: str
     source_of_truth_repo: str
+    local_execution_repo_path: str | None
     decision_status: str
     evaluation_mode: str
     comparability_group: str | None
@@ -107,6 +108,7 @@ class RoundState:
     round_id: str
     experiment_mode: str
     source_of_truth_repo: str
+    local_execution_repo_path: str
     evaluation_mode: str
     status: str
     decision_file: str
@@ -318,6 +320,9 @@ def load_decision_file(path: Path) -> GPTDecision:
         )
 
     source_of_truth_repo = _optional_string(payload, "source_of_truth_repo") or (
+        "dk0113-Y/DRL-path-finding" if experiment_mode == "formal_train" else str(repo_root())
+    )
+    local_execution_repo_path = _optional_string(payload, "local_execution_repo_path") or (
         "../代码1" if experiment_mode == "formal_train" else str(repo_root())
     )
     evaluation_mode = _optional_string(payload, "evaluation_mode") or (
@@ -429,6 +434,7 @@ def load_decision_file(path: Path) -> GPTDecision:
         round_id=round_id,
         experiment_mode=experiment_mode,
         source_of_truth_repo=source_of_truth_repo,
+        local_execution_repo_path=local_execution_repo_path,
         decision_status=decision_status,
         evaluation_mode=evaluation_mode,
         comparability_group=_optional_string(payload, "comparability_group"),
@@ -525,6 +531,7 @@ def build_round_state(
         round_id=normalize_round_id(round_id),
         experiment_mode=str(decision_payload.get("experiment_mode", "synthetic_rehearsal")).strip() or "synthetic_rehearsal",
         source_of_truth_repo=str(decision_payload.get("source_of_truth_repo", "")).strip(),
+        local_execution_repo_path=str(decision_payload.get("local_execution_repo_path", "")).strip(),
         evaluation_mode=str(decision_payload.get("evaluation_mode", "")).strip() or "synthetic_oracle",
         status="prepared",
         decision_file=relative_repo_path(decision_file),
@@ -550,6 +557,7 @@ def round_state_to_dict(state: RoundState) -> dict[str, Any]:
         "round_id": state.round_id,
         "experiment_mode": state.experiment_mode,
         "source_of_truth_repo": state.source_of_truth_repo,
+        "local_execution_repo_path": state.local_execution_repo_path,
         "evaluation_mode": state.evaluation_mode,
         "status": state.status,
         "decision_file": state.decision_file,
@@ -591,6 +599,7 @@ def load_round_state_file(path: Path) -> RoundState:
         round_id=normalize_round_id(_require_string(payload, "round_id")),
         experiment_mode=_optional_string(payload, "experiment_mode") or "synthetic_rehearsal",
         source_of_truth_repo=_optional_string(payload, "source_of_truth_repo") or "",
+        local_execution_repo_path=_optional_string(payload, "local_execution_repo_path") or "",
         evaluation_mode=_optional_string(payload, "evaluation_mode") or "synthetic_oracle",
         status=_require_string(payload, "status"),
         decision_file=_require_string(payload, "decision_file"),
@@ -652,6 +661,7 @@ def update_round_state_file(path: Path, **changes: Any) -> RoundState:
             "bridge_status",
             "experiment_mode",
             "source_of_truth_repo",
+            "local_execution_repo_path",
             "evaluation_mode",
         }:
             if value is None:
@@ -942,6 +952,7 @@ def render_gpt_input_package(
             f"- Round id: `{round_state.round_id}`",
             f"- Experiment mode: `{decision.experiment_mode}`",
             f"- Source of truth repo: `{decision.source_of_truth_repo}`",
+            f"- Local execution repo path: `{decision.local_execution_repo_path or 'UNSET'}`",
             f"- Evaluation mode: `{decision.evaluation_mode}`",
             f"- Round state status: `{round_state.status}`",
             f"- Run directory: `{round_state.run_dir or 'UNSET'}`",
@@ -1007,6 +1018,7 @@ def render_codex_request(
         formal_context_lines = [
             f"- Experiment mode: `{decision.experiment_mode}`",
             f"- Source of truth repo: `{decision.source_of_truth_repo}`",
+            f"- Local execution repo path: `{decision.local_execution_repo_path or 'UNSET'}`",
             f"- Evaluation mode: `{decision.evaluation_mode}`",
             f"- Comparability group: `{decision.comparability_group or 'UNSET'}`",
             f"- Baseline round id: `{decision.baseline_round_id or 'UNSET'}`",

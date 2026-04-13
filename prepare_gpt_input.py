@@ -72,6 +72,7 @@ def main() -> int:
                 comparability_report=bundle["comparability_report"],
                 metric_snapshot=bundle["metric_snapshot"],
                 benchmark_summary=bundle["benchmark_summary"],
+                historical_baseline_summary=bundle["historical_baseline_summary"],
             )
         else:
             codex_request_text = codex_request_path.read_text(encoding="utf-8")

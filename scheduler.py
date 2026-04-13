@@ -137,7 +137,8 @@ def parse_args() -> argparse.Namespace:
 def execution_repo_root(decision: GPTDecision | None) -> Path:
     if decision is None or decision.experiment_mode != "formal_train":
         return repo_root()
-    target = Path(decision.source_of_truth_repo)
+    target_text = decision.local_execution_repo_path or decision.source_of_truth_repo
+    target = Path(target_text)
     if not target.is_absolute():
         target = (repo_root() / target).resolve()
     return target
