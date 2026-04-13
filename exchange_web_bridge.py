@@ -142,26 +142,76 @@ def run_bridge():
             print(f"Navigating to {args.url}...")
             page.goto(args.url)
 
+            # --- Phase 1: Transition-page detection and wait ---
+            initial_title = ""
+            final_title_before_prompt = ""
+            transition_detected = False
+            transition_wait_used_sec = 0
+            TRANSITION_WAIT_MAX = 120  # seconds
+
+            TRANSITION_SIGNALS = ["just a moment", "cloudflare", "checking your browser", "please wait", "ddos-guard"]
+
+            try:
+                initial_title = page.title()
+            except Exception:
+                pass
+
+            if any(s in initial_title.lower() for s in TRANSITION_SIGNALS):
+                transition_detected = True
+                print(f"Transition page detected: '{initial_title}'. Waiting up to {TRANSITION_WAIT_MAX}s for it to clear...")
+                elapsed = 0
+                while elapsed < TRANSITION_WAIT_MAX:
+                    time.sleep(2)
+                    elapsed += 2
+                    try:
+                        current_title = page.title()
+                    except Exception:
+                        current_title = ""
+                    if not any(s in current_title.lower() for s in TRANSITION_SIGNALS):
+                        print(f"Transition cleared after {elapsed}s. Current title: '{current_title}'")
+                        break
+                    if elapsed % 10 == 0:
+                        print(f"  still on transition page after {elapsed}s: '{current_title}'")
+                transition_wait_used_sec = elapsed
+
+            try:
+                final_title_before_prompt = page.title()
+            except Exception:
+                pass
+
+            debug_info_early = {
+                "round_id": round_id,
+                "gpt_profile_mode": profile_mode,
+                "initial_page_title": initial_title,
+                "transition_page_detected": transition_detected,
+                "transition_wait_used_sec": transition_wait_used_sec,
+                "final_page_title_before_prompt_check": final_title_before_prompt,
+                "prompt_wait_stage": "transition_wait" if transition_detected else "prompt_wait",
+                "url_at_prompt_check": page.url,
+            }
+
+            # --- Phase 2: Prompt wait ---
             prompt_locator, matched_selector = wait_for_prompt(page, timeout_ms=30000)
             if not prompt_locator:
-                error_msg = f"Error: Could not find prompt interface. URL: {page.url}. Suspected unlogged state/initial screen."
+                debug_info_early["prompt_wait_stage"] = "prompt_timeout_after_transition" if transition_detected else "prompt_timeout"
+                error_msg = (
+                    f"Error: Could not find prompt interface after transition wait. "
+                    f"URL: {page.url}. Title: '{final_title_before_prompt}'. "
+                    f"transition_detected={transition_detected}, transition_wait_used_sec={transition_wait_used_sec}."
+                )
                 print(error_msg, file=sys.stderr)
                 if not headless:
                     print("Waiting for manual login/interaction...")
                     prompt_locator, matched_selector = wait_for_prompt(page, timeout_ms=300000)
-                
+
                 if not prompt_locator:
-                    # Write debug stub to avoid black-holing
-                    debug_info_early = {
-                        "round_id": round_id,
-                        "gpt_profile_mode": profile_mode,
-                        "extract_error": error_msg,
-                        "url_at_failure": page.url
-                    }
+                    debug_info_early["extract_error"] = error_msg
                     debug_path = tmp_dir / f"{round_id}_gpt_bridge_debug.json"
                     from automation_protocol import write_json_file
                     write_json_file(debug_path, debug_info_early)
                     return 1
+
+            debug_info_early["prompt_wait_stage"] = "prompt_ready"
 
             print(f"Filling message using {matched_selector}...")
             prompt_locator.fill(msg_content)
@@ -175,6 +225,11 @@ def run_bridge():
             debug_info = {
                "round_id": round_id,
                "gpt_profile_mode": profile_mode,
+               "initial_page_title": debug_info_early.get("initial_page_title", ""),
+               "transition_page_detected": debug_info_early.get("transition_page_detected", False),
+               "transition_wait_used_sec": debug_info_early.get("transition_wait_used_sec", 0),
+               "final_page_title_before_prompt_check": debug_info_early.get("final_page_title_before_prompt_check", ""),
+               "prompt_wait_stage": "prompt_ready",
                "index_message_path": str(msg_path),
                "initial_assistant_count": initial_assistant_count,
                "final_assistant_count": initial_assistant_count,

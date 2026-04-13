@@ -22,6 +22,7 @@ def parse_args():
     parser.add_argument("--allow-synthetic-codex-fallback", action="store_true", help="Allow codex analysis to mock if UI absent.")
     parser.add_argument("--allow-synthetic-gpt-fallback", action="store_true", help="Allow GPT json to mock if Web bridge absent.")
     parser.add_argument("--gpt-profile-dir", type=Path, help="Persistent browser profile dir for real ChatGPT loop.")
+    parser.add_argument("--gpt-headless", action="store_true", default=False, help="Run GPT bridge in headless mode. Default: False (headed, matching hand-test path).")
     return parser.parse_args()
 
 def main():
@@ -68,6 +69,7 @@ def main():
         "rounds_run": 0,
         "gpt_profile_dir": str(args.gpt_profile_dir.resolve()) if args.gpt_profile_dir else "",
         "gpt_profile_mode": "persistent_profile" if args.gpt_profile_dir else "ephemeral_context",
+        "gpt_headless": args.gpt_headless,
         "round_log": [],
         "stop_reason": "",
         "success": False
@@ -133,6 +135,7 @@ def main():
                 "ingest_output_gate_reason": "",
                 "gpt_profile_dir": summary["gpt_profile_dir"],
                 "gpt_profile_mode": summary["gpt_profile_mode"],
+                "gpt_headless": summary["gpt_headless"],
                 "publish_pushed": False,
             }
             summary["round_log"].append(run_log)
@@ -235,7 +238,9 @@ def main():
             next_json_path = Path("tmp") / f"next_real_decision_{current_round_id}.json"
             
             # Attempt real exchange bridge
-            bridge_cmd = [sys.executable, "exchange_web_bridge.py", "--round-id", current_round_id, "--exchange-repo-dir", str(args.exchange_repo), "--headless", "true"]
+            headless_str = "true" if args.gpt_headless else "false"
+            print(f"GPT bridge mode: headless={headless_str}")
+            bridge_cmd = [sys.executable, "exchange_web_bridge.py", "--round-id", current_round_id, "--exchange-repo-dir", str(args.exchange_repo), "--headless", headless_str]
             if args.gpt_profile_dir:
                 bridge_cmd.extend(["--profile-dir", str(args.gpt_profile_dir)])
                 
