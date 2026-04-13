@@ -1,0 +1,17 @@
+2026/04/13-14:22:35.451 7114 Reusing MANIFEST C:\Users\Dk\Desktop\SCI\codex_ui_bridge_demo\playwright_profiles\chatgpt_persistent\Default\Local Storage\leveldb/MANIFEST-000001
+2026/04/13-14:22:35.457 7114 Recovering log #34
+2026/04/13-14:22:35.463 7114 Level-0 table #37: started
+2026/04/13-14:22:35.476 7114 Level-0 table #37: 879045 bytes OK
+2026/04/13-14:22:35.480 7114 Delete type=0 #34
+2026/04/13-14:22:35.481 67f4 Compacting 4@0 + 1@1 files
+2026/04/13-14:22:35.507 67f4 Generated table #39@0: 32 keys, 884146 bytes
+2026/04/13-14:22:35.507 67f4 Compacted 4@0 + 1@1 files => 884146 bytes
+2026/04/13-14:22:35.507 67f4 compacted to: files[ 0 1 0 0 0 0 0 ]
+2026/04/13-14:22:35.508 67f4 Delete type=2 #26
+2026/04/13-14:22:35.508 67f4 Delete type=2 #29
+2026/04/13-14:22:35.509 67f4 Delete type=2 #32
+2026/04/13-14:22:35.509 67f4 Delete type=2 #35
+2026/04/13-14:22:35.509 67f4 Delete type=2 #37
+2026/04/13-14:23:35.488 67f4 Level-0 table #41: started
+2026/04/13-14:23:35.512 67f4 Level-0 table #41: 883128 bytes OK
+2026/04/13-14:23:35.525 67f4 Delete type=0 #38

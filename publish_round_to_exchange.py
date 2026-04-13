@@ -183,7 +183,6 @@ def main() -> int:
             print("Committing changes...")
             run_git_command(exchange_dir, ["add", "."])
             
-            # Check for changes
             status_res = run_git_command(exchange_dir, ["status", "--porcelain"])
             if not status_res.stdout.strip():
                 print("status=no_changes")
@@ -191,12 +190,29 @@ def main() -> int:
                 return 0
             else:
                 run_git_command(exchange_dir, ["commit", "-m", f"Publish round {round_id}"])
+                
+                # Extract the commit SHA of the round contents
+                rev_res = run_git_command(exchange_dir, ["rev-parse", "HEAD"])
+                content_commit_sha = rev_res.stdout.strip()
+
+                # Update CURRENT_ROUND.json with this real SHA
+                current_round_path = exchange_dir / "CURRENT_ROUND.json"
+                if current_round_path.exists():
+                    cr_data = read_json_file(current_round_path)
+                    cr_data["last_exchange_commit_sha"] = content_commit_sha
+                    write_json_file(current_round_path, cr_data)
+                    
+                    # Commit the lineage update
+                    run_git_command(exchange_dir, ["add", "CURRENT_ROUND.json"])
+                    run_git_command(exchange_dir, ["commit", "-m", f"Update lineage metadata for round {round_id}"])
+                
+                # Read HEAD to get the absolute latest commit sha for the local round state
+                final_rev = run_git_command(exchange_dir, ["rev-parse", "HEAD"])
+                commit_sha = final_rev.stdout.strip()
+
                 if args.push:
                     print("Pushing to remote...")
                     run_git_command(exchange_dir, ["push", "origin", args.branch])
-            
-            rev_res = run_git_command(exchange_dir, ["rev-parse", "HEAD"])
-            commit_sha = rev_res.stdout.strip()
             
             # Update local round state with the lineage of where it went
             from automation_protocol import update_round_state_file

@@ -18,7 +18,7 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0"
 SUPPORTED_TARGET_PROGRAM = "fake_train.py"
-ALLOWED_DECISION_STATUS = {"run_next_round", "hold", "stop"}
+ALLOWED_DECISION_STATUS = {"run_next_round", "stop_experiment", "pause_for_manual_review", "analyze_only"}
 ROUND_ID_PATTERN = re.compile(r"^round_(\d{4})$")
 ROUND_STATE_FILENAME = "round_state.json"
 GPT_INPUT_FILENAME = "gpt_input.md"
@@ -258,6 +258,11 @@ def load_decision_file(path: Path) -> GPTDecision:
     schema_version = _require_string(payload, "schema_version")
     round_id = normalize_round_id_lenient(_require_string(payload, "round_id"))
     decision_status = _require_string(payload, "decision_status")
+    if decision_status == "stop":
+        decision_status = "stop_experiment"
+    elif decision_status == "hold":
+        decision_status = "pause_for_manual_review"
+        
     if decision_status not in ALLOWED_DECISION_STATUS:
         raise ProtocolError(
             f"Invalid decision_status '{decision_status}'. "

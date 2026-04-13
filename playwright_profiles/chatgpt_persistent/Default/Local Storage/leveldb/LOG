@@ -1,0 +1,6 @@
+2026/04/13-14:28:07.487 61fc Reusing MANIFEST C:\Users\Dk\Desktop\SCI\codex_ui_bridge_demo\playwright_profiles\chatgpt_persistent\Default\Local Storage\leveldb/MANIFEST-000001
+2026/04/13-14:28:07.493 61fc Recovering log #40
+2026/04/13-14:28:07.496 61fc Reusing old log C:\Users\Dk\Desktop\SCI\codex_ui_bridge_demo\playwright_profiles\chatgpt_persistent\Default\Local Storage\leveldb/000040.log 
+2026/04/13-14:29:07.515 5a08 Level-0 table #44: started
+2026/04/13-14:29:07.525 5a08 Level-0 table #44: 886439 bytes OK
+2026/04/13-14:29:07.527 5a08 Delete type=0 #40

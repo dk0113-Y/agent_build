@@ -568,14 +568,14 @@ def main() -> int:
         if round_state_file is not None:
             update_round_state_file(
                 round_state_file,
-                status="failed",
+                status="run_dir_not_detected",
                 run_dir="",
                 training_return_code=return_code,
                 bridge_invoked=bridge_result.invoked,
                 bridge_status=bridge_result.status,
             )
         emit_terminal_summary(
-            status="failed",
+            status="run_dir_not_detected",
             round_dir=context.round_dir,
             run_dir=None,
             return_code=return_code,
@@ -605,8 +605,15 @@ def main() -> int:
     missing_items = list(validation.missing_items) if validation.missing_items else []
     if timeout_reason != "exited":
         missing_items.append(timeout_reason)
-        
-    final_status = "success" if success else timeout_reason if timeout_reason != "exited" else "failed"
+
+    if timeout_reason != "exited":
+        final_status = timeout_reason
+    elif return_code != 0:
+        final_status = "training_process_nonzero_exit"
+    elif not validation.success:
+        final_status = "artifact_validation_failed"
+    else:
+        final_status = "success"
 
     sync_round_state(
         context,
