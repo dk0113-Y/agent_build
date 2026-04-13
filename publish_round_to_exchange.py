@@ -190,33 +190,45 @@ def main() -> int:
                 return 0
             else:
                 run_git_command(exchange_dir, ["commit", "-m", f"Publish round {round_id}"])
-                
-                # Extract the commit SHA of the round contents
+
+                # ── Canonical lineage anchor ──────────────────────────────────
+                # content_commit_sha is the authoritative anchor: the commit that
+                # contains the round's actual files (report, decision, manifest).
+                # Both CURRENT_ROUND.json and local round_state.json must point
+                # to THIS sha — NOT to any subsequent metadata commit.
                 rev_res = run_git_command(exchange_dir, ["rev-parse", "HEAD"])
                 content_commit_sha = rev_res.stdout.strip()
+                commit_sha = content_commit_sha  # canonical; never overwritten below
 
-                # Update CURRENT_ROUND.json with this real SHA
+                print(f"content_commit_sha={content_commit_sha}", flush=True)
+
+                # Back-fill CURRENT_ROUND.json with the canonical anchor
                 current_round_path = exchange_dir / "CURRENT_ROUND.json"
                 if current_round_path.exists():
                     cr_data = read_json_file(current_round_path)
                     cr_data["last_exchange_commit_sha"] = content_commit_sha
                     write_json_file(current_round_path, cr_data)
-                    
-                    # Commit the lineage update
+
+                    # Optional second commit to persist the lineage metadata in
+                    # the exchange repo — does NOT change commit_sha / canonical anchor.
                     run_git_command(exchange_dir, ["add", "CURRENT_ROUND.json"])
-                    run_git_command(exchange_dir, ["commit", "-m", f"Update lineage metadata for round {round_id}"])
-                
-                # Read HEAD to get the absolute latest commit sha for the local round state
-                final_rev = run_git_command(exchange_dir, ["rev-parse", "HEAD"])
-                commit_sha = final_rev.stdout.strip()
+                    lm_status = run_git_command(exchange_dir, ["status", "--porcelain"])
+                    if lm_status.stdout.strip():
+                        run_git_command(exchange_dir, ["commit", "-m",
+                                                       f"Update CURRENT_ROUND lineage anchor for round {round_id}"])
 
                 if args.push:
                     print("Pushing to remote...")
                     run_git_command(exchange_dir, ["push", "origin", args.branch])
-            
-            # Update local round state with the lineage of where it went
+
+        # ── Write canonical anchor to local round state ───────────────────────
+        # source_exchange_commit_sha == content_commit_sha; always aligned with
+        # CURRENT_ROUND.json.last_exchange_commit_sha.
+        if commit_sha:
             from automation_protocol import update_round_state_file
-            update_round_state_file(local_round_dir / "round_state.json", source_exchange_commit_sha=commit_sha)
+            update_round_state_file(local_round_dir / "round_state.json",
+                                    source_exchange_commit_sha=commit_sha)
+
 
         print("status=success")
         if commit_sha:

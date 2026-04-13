@@ -247,6 +247,55 @@ def wait_for_new_run_dir(
     return None
 
 
+def terminate_process_tree(process: subprocess.Popen, reason: str) -> dict[str, str]:
+    """Attempt to kill the entire process tree, Windows-aware.
+    
+    Returns a diagnostics dict with keys:
+      - training_termination_strategy
+      - training_termination_reason
+      - training_cleanup_succeeded
+    """
+    diag: dict[str, str] = {
+        "training_termination_reason": reason,
+        "training_termination_strategy": "unknown",
+        "training_cleanup_succeeded": "false",
+    }
+    pid = process.pid
+    import platform
+    if platform.system() == "Windows":
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode == 0:
+                diag["training_termination_strategy"] = "taskkill_/T_/F"
+                diag["training_cleanup_succeeded"] = "true"
+                print(f"[ProcessTree] taskkill /PID {pid} /T /F succeeded.", flush=True)
+                return diag
+            else:
+                print(f"[ProcessTree] taskkill failed (rc={result.returncode}): {result.stderr.strip()}", flush=True)
+        except Exception as exc:
+            print(f"[ProcessTree] taskkill exception: {exc}", flush=True)
+    # Fallback: try terminate then kill
+    try:
+        process.terminate()
+        diag["training_termination_strategy"] = "process.terminate_fallback"
+        diag["training_cleanup_succeeded"] = "partial"
+        print(f"[ProcessTree] process.terminate() sent to PID {pid}.", flush=True)
+    except Exception as exc:
+        print(f"[ProcessTree] process.terminate() exception: {exc}", flush=True)
+        try:
+            process.kill()
+            diag["training_termination_strategy"] = "process.kill_fallback"
+            diag["training_cleanup_succeeded"] = "partial"
+            print(f"[ProcessTree] process.kill() sent to PID {pid}.", flush=True)
+        except Exception as exc2:
+            print(f"[ProcessTree] process.kill() also failed: {exc2}", flush=True)
+            diag["training_termination_strategy"] = "all_failed"
+    return diag
+
+
 def wait_for_process_exit(process: subprocess.Popen[bytes], poll_sec: float, run_dir: Path | None = None, no_progress_timeout: float = 0, hard_timeout: float = 0) -> tuple[int | None, str]:
     start_time = time.time()
     last_heartbeat = start_time
@@ -278,14 +327,21 @@ def wait_for_process_exit(process: subprocess.Popen[bytes], poll_sec: float, run
         
         # Hard timeout check
         if hard_timeout > 0 and elapsed > hard_timeout:
-            process.terminate()
+            diag = terminate_process_tree(process, "training_hard_timeout")
+            print(f"[Timeout] Hard timeout reached after {elapsed:.0f}s. "
+                  f"strategy={diag['training_termination_strategy']} "
+                  f"cleanup={diag['training_cleanup_succeeded']}", flush=True)
             return None, "training_hard_timeout"
 
         # No progress timeout check
         latest_mtime, latest_file = get_latest_mtime()
         no_progress_duration = now - latest_mtime
         if no_progress_timeout > 0 and no_progress_duration > no_progress_timeout:
-            process.terminate()
+            diag = terminate_process_tree(process, "training_no_progress_timeout")
+            print(f"[Timeout] No-progress timeout after {no_progress_duration:.0f}s idle. "
+                  f"Last file: {latest_file or 'none'}. "
+                  f"strategy={diag['training_termination_strategy']} "
+                  f"cleanup={diag['training_cleanup_succeeded']}", flush=True)
             return None, "training_no_progress_timeout"
 
         # Heartbeat every 60s
@@ -562,9 +618,12 @@ def main() -> int:
         poll_sec=args.poll_sec,
     )
     if run_dir is None:
-        process.terminate()
+        _diag = terminate_process_tree(process, "run_dir_not_detected")
         return_code = process.poll()
         bridge_result = BridgeInvocationResult(False, "not_invoked", "not_started")
+        print(f"[Scheduler] run_dir not detected. "
+              f"strategy={_diag['training_termination_strategy']} "
+              f"cleanup={_diag['training_cleanup_succeeded']}", flush=True)
         if round_state_file is not None:
             update_round_state_file(
                 round_state_file,
