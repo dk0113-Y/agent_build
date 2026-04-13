@@ -118,6 +118,10 @@ class DemoResult:
     message_probe: str = ""
     send_confirmation_status: str = ""
     send_confirmation_reason: str = ""
+    report_ready: bool = False
+    report_ready_reason: str = ""
+    ui_candidate_rejected: bool = False
+    ui_candidate_reject_reason: str = ""
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -856,6 +860,154 @@ def run_inspect(config: dict[str, Any], logs_dir: Path) -> DemoResult:
     return DemoResult(True, "inspect_ok", "UI inspection completed.", log_path)
 
 
+# ── UI-noise rejection -──────────────────────────────────────────────────────
+_UI_NOISE_BLACKLIST = {
+    "要求后续变更", "继续", "处理中", "请稍后", "已收到",
+    "done", "continue", "ok", "received", "processing",
+}
+_UI_NOISE_DOMAIN_WORDS = {
+    "reward", "coverage", "loss", "report", "analysis",
+    "turn_penalty", "revisit_penalty", "entry_k", "parameter",
+    "training", "step", "success rate",
+}
+_UI_NOISE_MIN_CHARS = 80
+
+
+def is_ui_candidate_noise(text: str) -> tuple[bool, str]:
+    """Return (is_noise, reason). If noise, caller should not treat as a valid report."""
+    stripped = text.strip()
+    if not stripped:
+        return True, "empty"
+    if len(stripped) < _UI_NOISE_MIN_CHARS:
+        return True, f"too_short ({len(stripped)} chars < {_UI_NOISE_MIN_CHARS})"
+    lower = stripped.lower()
+    for phrase in _UI_NOISE_BLACKLIST:
+        if phrase in lower:
+            return True, f"blacklist_phrase: {phrase!r}"
+    has_heading = any(line.strip().startswith("#") for line in stripped.splitlines())
+    has_list = any(line.strip().startswith(("- ", "* ")) for line in stripped.splitlines())
+    domain_count = sum(1 for kw in _UI_NOISE_DOMAIN_WORDS if kw in lower)
+    if not has_heading and not has_list and domain_count < 2:
+        return True, "no_structure_no_domain_keywords"
+    return False, ""
+
+
+# ── File-first report watcher ─────────────────────────────────────────────────
+
+def wait_for_report_file(
+    report_path: Path,
+    round_id: str,
+    started_at: float,
+    timeout_sec: float,
+    stub_text: str | None = None,
+    poll_interval: float = 3.0,
+    stable_reads: int = 2,
+) -> tuple[bool, str, dict]:
+    """
+    Poll report_path until it exists, has been updated after started_at,
+    is non-empty, is not the template stub, is stable across consecutive reads,
+    and passes codex_report_is_ready().
+
+    Returns (success, reason, diagnostics_dict).
+    """
+    from automation_protocol import codex_report_is_ready
+
+    diag: dict = {
+        "report_path": str(report_path),
+        "started_at": started_at,
+        "timeout_sec": timeout_sec,
+        "report_exists_before_send": report_path.exists(),
+        "report_mtime_before_send": report_path.stat().st_mtime if report_path.exists() else None,
+        "report_exists_after_wait": False,
+        "report_mtime_after_wait": None,
+        "report_updated_after_send": False,
+        "report_size_after_wait": 0,
+        "report_ready": False,
+        "report_ready_reason": "",
+        "stable_check_count": 0,
+    }
+
+    deadline = time.time() + timeout_sec
+    last_text = ""
+    consecutive_stable = 0
+
+    while time.time() < deadline:
+        time.sleep(poll_interval)
+
+        if not report_path.exists():
+            continue
+
+        try:
+            mtime = report_path.stat().st_mtime
+            size = report_path.stat().st_size
+        except OSError:
+            continue
+
+        try:
+            content = report_path.read_text("utf-8").strip()
+        except OSError:
+            continue
+
+        if not content:
+            continue
+        if stub_text and content == stub_text.strip():
+            continue
+        if mtime <= started_at:
+            continue  # file not updated since we started
+
+        # Stability check
+        if content == last_text:
+            consecutive_stable += 1
+        else:
+            consecutive_stable = 1
+        last_text = content
+        diag["stable_check_count"] = consecutive_stable
+
+        if consecutive_stable < stable_reads:
+            continue
+
+        # Reached stable state — run readiness check
+        ready, reason = codex_report_is_ready(round_id, content)
+        diag["report_exists_after_wait"] = True
+        diag["report_mtime_after_wait"] = mtime
+        diag["report_updated_after_send"] = True
+        diag["report_size_after_wait"] = size
+        diag["report_ready"] = ready
+        diag["report_ready_reason"] = reason
+
+        if ready:
+            return True, "ok", diag
+        else:
+            # File is stable but not ready; keep waiting (Codex may still be writing)
+            consecutive_stable = 0
+            last_text = ""
+
+    # Timeout — record final state
+    if report_path.exists():
+        try:
+            diag["report_exists_after_wait"] = True
+            diag["report_mtime_after_wait"] = report_path.stat().st_mtime
+            diag["report_size_after_wait"] = report_path.stat().st_size
+            content = report_path.read_text("utf-8").strip()
+            if content and (not stub_text or content != stub_text.strip()):
+                ready, reason = codex_report_is_ready(round_id, content)
+                diag["report_ready"] = ready
+                diag["report_ready_reason"] = reason
+                if ready:
+                    return True, "ok_at_timeout_flush", diag
+        except OSError:
+            pass
+
+    reason = "report_file_not_ready_before_timeout"
+    if not diag["report_exists_after_wait"]:
+        reason = "report_file_never_appeared"
+    elif not diag["report_updated_after_send"]:
+        reason = "report_file_not_updated_after_send"
+    elif not diag["report_ready"]:
+        reason = f"report_not_ready: {diag['report_ready_reason']}"
+    return False, reason, diag
+
+
 def run_send_or_demo(
     config: dict[str, Any],
     logs_dir: Path,
@@ -867,6 +1019,9 @@ def run_send_or_demo(
     sent_message_source: str = "ack",
     message_path: str = "",
     expect_substring: str | None = None,
+    report_path: Path | None = None,
+    round_id: str = "round_xxxx",
+    report_wait_sec: float = 300.0,
 ) -> DemoResult:
     bridge = CodexBridge(config, logs_dir)
     stamp = now_ts()
@@ -885,9 +1040,29 @@ def run_send_or_demo(
         "message_probe_baseline_count": None,
         "message_probe_post_paste_count": None,
         "message_probe_post_send_count": None,
+        "send_confirmed": False,
+        "send_confirm_reason": "",
         "send_confirmation_status": "",
         "send_confirmation_reason": "",
         "expect_substring": expect_substring,
+        # File-first fields
+        "report_path": str(report_path) if report_path else None,
+        "report_exists_before_send": report_path.exists() if report_path else False,
+        "report_mtime_before_send": report_path.stat().st_mtime if (report_path and report_path.exists()) else None,
+        "report_exists_after_wait": False,
+        "report_mtime_after_wait": None,
+        "report_updated_after_send": False,
+        "report_size_after_wait": 0,
+        "report_ready": False,
+        "report_ready_reason": "",
+        "ui_candidate_reply_text": "",
+        "ui_candidate_reply_length": 0,
+        "ui_candidate_rejected": False,
+        "ui_candidate_reject_reason": "",
+        "assistant_turn_baseline": None,
+        "assistant_turn_after_send": None,
+        "user_turn_baseline": None,
+        "user_turn_after_send": None,
     }
     if message_path:
         payload["message_path"] = message_path
@@ -909,6 +1084,8 @@ def run_send_or_demo(
         payload["sent_prompt"] = prompt
 
         bridge.attach()
+        started_at = time.time()
+
         if token:
             baseline_count, _, baseline_texts = bridge.count_token_in_ui(token)
             payload["baseline_token_occurrence_count"] = baseline_count
@@ -943,6 +1120,7 @@ def run_send_or_demo(
             manual_confirm_send=manual_confirm_send,
             message_probe=message_probe or None,
         )
+        send_started_at = time.time()
         payload["send_meta"] = send_meta
         if message_probe:
             payload["message_probe_post_paste_count"] = send_meta["message_probe_post_paste_count"]
@@ -964,6 +1142,8 @@ def run_send_or_demo(
                 payload["message_probe_post_send_count"] = confirmation["message_probe_post_send_count"]
                 payload["send_confirmation_status"] = confirmation["status"]
                 payload["send_confirmation_reason"] = confirmation["reason"]
+                payload["send_confirmed"] = bool(confirmation["success"])
+                payload["send_confirm_reason"] = confirmation["reason"]
                 payload["send_confirmation_meta"] = {
                     "post_send_matching_texts": confirmation.get("post_send_matching_texts", []),
                     "post_send_visible_text_count": confirmation.get("post_send_visible_text_count", 0),
@@ -996,52 +1176,177 @@ def run_send_or_demo(
                 send_confirmation_reason=payload.get("send_confirmation_reason", ""),
             )
 
+        # ── send-and-wait (file-first) ────────────────────────────────────────
         if token:
+            # Legacy ACK-token mode (probe mode, no report path)
             success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
         else:
-            # We are in send-and-wait mode for an arbitrary message
-            success, reply_text, extra = bridge.wait_for_arbitrary_reply(
-                baseline_visible_count=payload.get("baseline_visible_text_count", 0),
-                expect_substring=payload.get("expect_substring"),
-                prompt=prompt
-            )
+            # Step A: Hard send-confirmation gate
+            if message_probe:
+                composer_rect_dict = send_meta["composer_rect"]
+                confirmation = bridge.confirm_message_delivery(
+                    message_probe=message_probe,
+                    baseline_count=payload.get("message_probe_baseline_count") or 0,
+                    post_paste_count=payload.get("message_probe_post_paste_count") or 0,
+                    composer_rect=Rect(
+                        left=int(composer_rect_dict["left"]),
+                        top=int(composer_rect_dict["top"]),
+                        right=int(composer_rect_dict["right"]),
+                        bottom=int(composer_rect_dict["bottom"]),
+                    ),
+                )
+                payload["message_probe_post_send_count"] = confirmation["message_probe_post_send_count"]
+                payload["send_confirmation_status"] = confirmation["status"]
+                payload["send_confirmation_reason"] = confirmation["reason"]
+                payload["send_confirmed"] = bool(confirmation["success"])
+                payload["send_confirm_reason"] = confirmation["reason"]
 
-        payload["reply_detection"] = extra
-        payload["detected_reply_text"] = reply_text
-        payload["success"] = bool(success)
-        payload["status"] = "reply_detected" if success else "reply_not_detected"
-        
-        if payload.get("expect_substring"):
-            payload["reply_matches_expectation"] = extra.get("reply_matches_expectation", False)
-            if payload["reply_matches_expectation"]:
-                payload["status"] = "reply_verified"
-                payload["message"] = "Reply verified to match expected content."
+                if not confirmation["success"]:
+                    payload["status"] = "send_not_confirmed"
+                    payload["success"] = False
+                    payload["message"] = f"Send not confirmed: {confirmation['reason']}"
+                    write_log(log_path, payload)
+                    return DemoResult(
+                        False, "send_not_confirmed", payload["message"], log_path,
+                        sent_prompt=prompt, message_probe=message_probe,
+                        send_confirmation_status=confirmation["status"],
+                        send_confirmation_reason=confirmation["reason"],
+                    )
+                print(f"Send confirmed: {confirmation['status']}")
             else:
-                payload["status"] = extra.get("failure_reason", "reply_content_mismatch")
-                payload["message"] = "Reply verification failed."
-                payload["success"] = False # explicitly marking as failed since verified check missed
-        else:
-            payload["message"] = (
-                "Reply was detected in the Codex UI."
-                if success
-                else "Reply was not detected before timeout."
-            )
-        if reply_text:
-            save_text(transcript_path, reply_text)
-            payload["detected_reply_text_path"] = str(transcript_path)
-        write_log(log_path, payload)
-        return DemoResult(
-            bool(payload["success"]),
-            payload["status"],
-            payload["message"],
-            log_path,
-            reply_text=reply_text,
-            sent_prompt=prompt,
-            expected_token=token,
-            sent_message_source=sent_message_source,
-            message_path=message_path,
-            message_probe=message_probe,
-        )
+                payload["send_confirmed"] = True
+                payload["send_confirm_reason"] = "no_probe_required"
+
+            # Step B: File-first — wait for report file to be written and ready
+            if report_path is not None:
+                from automation_protocol import render_codex_report_stub as _stub_fn
+                stub_text: str | None = None
+                try:
+                    stub_text = _stub_fn(round_id)
+                except Exception:
+                    pass
+
+                print(f"[file-first] Waiting up to {report_wait_sec}s for {report_path} ...")
+                file_ok, file_reason, file_diag = wait_for_report_file(
+                    report_path=report_path,
+                    round_id=round_id,
+                    started_at=send_started_at,
+                    timeout_sec=report_wait_sec,
+                    stub_text=stub_text,
+                )
+                # Propagate file diagnostics
+                payload.update({
+                    "report_exists_after_wait": file_diag.get("report_exists_after_wait", False),
+                    "report_mtime_after_wait": file_diag.get("report_mtime_after_wait"),
+                    "report_updated_after_send": file_diag.get("report_updated_after_send", False),
+                    "report_size_after_wait": file_diag.get("report_size_after_wait", 0),
+                    "report_ready": file_diag.get("report_ready", False),
+                    "report_ready_reason": file_diag.get("report_ready_reason", ""),
+                })
+
+                # Step C: Optionally read UI candidate as diagnostic only
+                try:
+                    _, ui_reply, _ = bridge.wait_for_arbitrary_reply(
+                        baseline_visible_count=payload.get("baseline_visible_text_count", 0),
+                        prompt=prompt,
+                    )
+                    ui_is_noise, ui_noise_reason = is_ui_candidate_noise(ui_reply)
+                    payload["ui_candidate_reply_text"] = ui_reply[:500]
+                    payload["ui_candidate_reply_length"] = len(ui_reply)
+                    payload["ui_candidate_rejected"] = ui_is_noise
+                    payload["ui_candidate_reject_reason"] = ui_noise_reason
+                    if ui_reply:
+                        save_text(transcript_path, ui_reply)
+                        payload["ui_transcript_path"] = str(transcript_path)
+                except Exception as ui_exc:
+                    payload["ui_candidate_error"] = str(ui_exc)
+
+                if file_ok:
+                    payload["success"] = True
+                    payload["status"] = "report_file_ready"
+                    payload["message"] = f"Codex report file verified ready: {report_path}"
+                    payload["reply_text"] = ""  # not from UI
+                    write_log(log_path, payload)
+                    return DemoResult(
+                        True, "report_file_ready", payload["message"], log_path,
+                        sent_prompt=prompt, message_probe=message_probe,
+                        send_confirmation_status=payload.get("send_confirmation_status", ""),
+                        send_confirmation_reason=payload.get("send_confirmation_reason", ""),
+                        report_ready=True, report_ready_reason="ok",
+                        ui_candidate_rejected=payload.get("ui_candidate_rejected", False),
+                        ui_candidate_reject_reason=payload.get("ui_candidate_reject_reason", ""),
+                    )
+                else:
+                    payload["success"] = False
+                    payload["status"] = f"report_file_not_ready: {file_reason}"
+                    payload["message"] = f"Report file not ready: {file_reason}"
+                    write_log(log_path, payload)
+                    return DemoResult(
+                        False, payload["status"], payload["message"], log_path,
+                        sent_prompt=prompt, message_probe=message_probe,
+                        send_confirmation_status=payload.get("send_confirmation_status", ""),
+                        send_confirmation_reason=payload.get("send_confirmation_reason", ""),
+                        report_ready=False, report_ready_reason=file_reason,
+                        ui_candidate_rejected=payload.get("ui_candidate_rejected", False),
+                        ui_candidate_reject_reason=payload.get("ui_candidate_reject_reason", ""),
+                    )
+
+            else:
+                # No report_path provided — fall back to UI-based detection (legacy)
+                print("Warning: --report-path not provided; falling back to UI text detection.")
+                success, reply_text, extra = bridge.wait_for_arbitrary_reply(
+                    baseline_visible_count=payload.get("baseline_visible_text_count", 0),
+                    expect_substring=payload.get("expect_substring"),
+                    prompt=prompt,
+                )
+                ui_is_noise, ui_noise_reason = is_ui_candidate_noise(reply_text)
+                payload["ui_candidate_reply_text"] = reply_text[:500]
+                payload["ui_candidate_reply_length"] = len(reply_text)
+                payload["ui_candidate_rejected"] = ui_is_noise
+                payload["ui_candidate_reject_reason"] = ui_noise_reason
+
+                if ui_is_noise:
+                    payload["success"] = False
+                    payload["status"] = "ui_noise_only"
+                    payload["message"] = f"UI reply rejected as noise: {ui_noise_reason}"
+                    if reply_text:
+                        save_text(transcript_path, reply_text)
+                        payload["ui_transcript_path"] = str(transcript_path)
+                    write_log(log_path, payload)
+                    return DemoResult(
+                        False, "ui_noise_only", payload["message"], log_path,
+                        reply_text=reply_text, sent_prompt=prompt, message_probe=message_probe,
+                        ui_candidate_rejected=True, ui_candidate_reject_reason=ui_noise_reason,
+                    )
+
+                payload["reply_detection"] = extra
+                payload["detected_reply_text"] = reply_text
+                payload["success"] = bool(success)
+                payload["status"] = "reply_detected" if success else "reply_not_detected"
+                if payload.get("expect_substring"):
+                    payload["reply_matches_expectation"] = extra.get("reply_matches_expectation", False)
+                    if payload["reply_matches_expectation"]:
+                        payload["status"] = "reply_verified"
+                        payload["message"] = "Reply verified to match expected content."
+                    else:
+                        payload["status"] = extra.get("failure_reason", "reply_content_mismatch")
+                        payload["message"] = "Reply verification failed."
+                        payload["success"] = False
+                else:
+                    payload["message"] = (
+                        "Reply was detected in the Codex UI." if success
+                        else "Reply was not detected before timeout."
+                    )
+                if reply_text:
+                    save_text(transcript_path, reply_text)
+                    payload["detected_reply_text_path"] = str(transcript_path)
+                write_log(log_path, payload)
+                return DemoResult(
+                    bool(payload["success"]), payload["status"], payload["message"], log_path,
+                    reply_text=reply_text, sent_prompt=prompt, expected_token=token,
+                    sent_message_source=sent_message_source, message_path=message_path, message_probe=message_probe,
+                )
+
     except Exception as exc:
         payload["status"] = "error"
         payload["success"] = False
@@ -1051,20 +1356,7 @@ def run_send_or_demo(
         return DemoResult(False, "error", payload["error"], log_path)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Local Codex UI bridge demo.")
-    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("config.json"))
-    parser.add_argument("--inspect-ui", action="store_true", help="Inspect candidate windows/controls and dump JSON.")
-    parser.add_argument("--send-only", action="store_true", help="Focus window, paste prompt, optionally send, but do not wait.")
-    parser.add_argument("--send-and-wait", action="store_true", help="Send arbitrary message and wait for an arbitrary reply text to appear safely.")
-    parser.add_argument("--expect-substring", type=str, help="Optionally verify content-level validation using expected substring text.")
-    parser.add_argument("--demo", action="store_true", help="Run the full bridge demo: focus, send, wait, read, log.")
-    parser.add_argument("--dry-run", action="store_true", help="Print and log the planned action without sending.")
-    parser.add_argument("--manual-confirm-send", action="store_true", help="Pause after paste and wait for Enter in console.")
-    parser.add_argument("--message-file", type=Path, help="Read message text from a file and send it to Codex.")
-    parser.add_argument("--message-text", help="Send the provided text to Codex.")
-    parser.add_argument("--output-json", type=Path, help="Optional specific file to dump machine-readable status dict.")
-    return parser.parse_args()
+
 
 
 def main() -> int:
@@ -1100,6 +1392,9 @@ def main() -> int:
             sent_message_source=sent_message_source,
             message_path=message_path,
             expect_substring=args.expect_substring,
+            report_path=args.report_path,
+            round_id=args.round_id,
+            report_wait_sec=args.report_wait_sec,
         )
 
     print(f"status={result.status}")
