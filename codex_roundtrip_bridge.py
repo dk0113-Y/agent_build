@@ -121,17 +121,21 @@ def main():
         if res.stdout:
             print("STDOUT:", res.stdout[-2000:])
 
-        # --- Read output_json for UI diagnostics ---
+        # --- Read output_json for primary status and diagnostics ---
+        bridge_send_confirmed = True  # assume OK unless we see otherwise
+        bridge_send_status = ""
+        bridge_send_reason = ""
         ui_transcript = ""
         if output_json.exists():
             try:
                 out_data = json.loads(output_json.read_text("utf-8"))
+                bridge_send_confirmed = bool(out_data.get("send_confirmed", True))
+                bridge_send_status = out_data.get("send_confirmation_status", out_data.get("status", ""))
+                bridge_send_reason = out_data.get("send_confirmation_reason", out_data.get("send_confirm_reason", ""))
                 ui_transcript = out_data.get("ui_candidate_reply_text", "") or out_data.get("reply_text", "")
                 if ui_transcript:
                     _write_raw_reply_snapshot(output_json, ui_transcript)
-                # Propagate file-first fields into output_json for upstream gate
                 if out_data.get("report_ready"):
-                    # Bridge already verified the file — trust it
                     print("demo_codex_bridge reports report_file_ready — running final file gate...")
             except Exception as e:
                 print(f"Warning: could not parse output_json: {e}")
@@ -150,8 +154,12 @@ def main():
             print(f"File gate passed. Report at {args.report.name}")
             return 0
         else:
-            failure_reason = gate_reason
-            print(f"File gate failed: {failure_reason}")
+            # Preserve send_not_confirmed as primary failure reason if send was not confirmed.
+            if not bridge_send_confirmed and bridge_send_status:
+                failure_reason = f"send_not_confirmed: {bridge_send_reason or bridge_send_status}"
+            else:
+                failure_reason = gate_reason
+            print(f"File gate failed: {gate_reason} | primary_failure_reason: {failure_reason}")
             if res.stderr:
                 print("STDERR:", res.stderr[-2000:])
 

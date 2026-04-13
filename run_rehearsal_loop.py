@@ -176,6 +176,7 @@ def main():
             bridge_success = False
 
             # --- Read output_json (file-first gate only needs success flag + file on disk) ---
+            b_data: dict = {}
             if bridge_out_json.exists():
                 try:
                     b_data = json.loads(bridge_out_json.read_text("utf-8"))
@@ -199,7 +200,12 @@ def main():
             if not bridge_out_json.exists():
                 codex_gate_reason = "codex_output_json_missing"
             elif not bridge_success:
-                codex_gate_reason = "codex_bridge_returned_failure"
+                # Discriminate sub-reason: send_not_confirmed is more specific than generic failure
+                b_status = b_data.get("status", "") if bridge_out_json.exists() else ""
+                if not codex_send_confirmed or b_status in ("send_not_confirmed",) or "send_not_confirmed" in b_status:
+                    codex_gate_reason = f"codex_send_not_confirmed: {codex_send_confirm_reason or b_status}"
+                else:
+                    codex_gate_reason = "codex_bridge_returned_failure"
             else:
                 rep_file_obj = round_dir / "codex_report.md"
                 if not rep_file_obj.exists():
@@ -244,6 +250,7 @@ def main():
                 summary["stop_reason"] = codex_gate_reason
                 print(f"Codex artifact gate not satisfied: {codex_gate_reason}")
                 break
+
 
             # Mark used_real_codex only when bridge reported success (not synthetic fallback)
             if bridge_success:

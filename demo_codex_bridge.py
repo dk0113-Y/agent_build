@@ -375,42 +375,145 @@ class CodexBridge:
         click_point(composer_rect.center_x, composer_rect.center_y)
         return composer_rect
 
+    def _try_click_send(self, send_method: str, send_button: auto.Control | None) -> str:
+        """Attempt to send using the given method. Returns actual method used."""
+        if send_method == "button":
+            if send_button is not None:
+                rect = rect_from_control(send_button)
+                if rect is not None:
+                    click_point(rect.center_x, rect.center_y)
+                    return "button"
+            # Fallback to Enter if button not found
+            press_enter()
+            return "enter_fallback"
+        else:
+            press_enter()
+            return "enter"
+
     def send_prompt(
         self,
         prompt: str,
         manual_confirm_send: bool = False,
         message_probe: str | None = None,
     ) -> dict[str, Any]:
+        """Send prompt with up to 3 attempts, alternating method on retry."""
         assert self.window is not None
+        max_attempts = int(self.config.get("send_max_attempts", 3))
+        retry_wait_sec = float(self.config.get("send_retry_wait_sec", 3.0))
+        base_send_method = self.config.get("send_method", "button")
+        alt_send_method = "enter" if base_send_method == "button" else "button"
+
         self.activate()
         self.maybe_scroll_to_bottom()
         composer_rect = self.focus_composer()
         pyperclip.copy(prompt)
         hotkey(VK_CONTROL, VK_V)
         time.sleep(self.config["after_paste_wait_sec"])
+
         probe_post_paste_count = None
         if message_probe:
             probe_post_paste_count, _, _ = self.count_token_in_ui(message_probe)
+
         send_button = self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
         if manual_confirm_send:
             input("Prompt is pasted. Press Enter here to continue with send...")
-        if self.config.get("send_method", "button") == "button":
-            if send_button is None:
-                raise RuntimeError("Could not find the send button for button-based send.")
-            rect = rect_from_control(send_button)
-            if rect is None:
-                raise RuntimeError("Send button had no accessible rectangle.")
-            click_point(rect.center_x, rect.center_y)
-        else:
-            press_enter()
-        time.sleep(self.config["after_send_wait_sec"])
+
+        attempts_log: list[dict[str, Any]] = []
+
+        for attempt_idx in range(max_attempts):
+            # Choose method: first attempt uses config, subsequent attempts alternate
+            if attempt_idx == 0:
+                method = base_send_method
+            elif attempt_idx % 2 == 1:
+                method = alt_send_method
+            else:
+                method = base_send_method
+
+            # Refresh send button on retries
+            if attempt_idx > 0:
+                try:
+                    refreshed_root = self._find_root_web_area()
+                    if refreshed_root is not None:
+                        self.root = refreshed_root
+                    send_button = self._find_send_button(
+                        self._find_button_by_name(self.config["toolbar_anchor_button_name"])
+                    )
+                except Exception:
+                    pass
+
+                # Check if composer still has content; re-paste if empty or probe missing
+                if message_probe:
+                    composer_probe = self._probe_in_composer(composer_rect, message_probe)
+                    composer_has_probe = composer_probe["probe_present"]
+                else:
+                    composer_probe = {"probe_present": True, "status": "no_probe_check"}
+                    composer_has_probe = True
+
+                if not composer_has_probe:
+                    print(f"[send attempt {attempt_idx+1}] Composer missing probe — re-pasting prompt...")
+                    self.focus_composer()
+                    pyperclip.copy(prompt)
+                    hotkey(VK_CONTROL, VK_V)
+                    time.sleep(self.config["after_paste_wait_sec"])
+                    if message_probe:
+                        probe_post_paste_count, _, _ = self.count_token_in_ui(message_probe)
+                else:
+                    composer_probe = {"probe_present": True, "status": "probe_still_in_composer"}
+
+            attempt_send_btn_summary = self._ctrl_summary(send_button)
+            actual_method = self._try_click_send(method, send_button)
+            time.sleep(self.config["after_send_wait_sec"])
+
+            # Quick post-send probe check
+            post_send_probe_count = None
+            post_send_visible = None
+            if message_probe:
+                post_send_probe_count, _, post_texts = self.count_token_in_ui(message_probe)
+                post_send_visible = len(post_texts)
+
+            send_btn_after = self._ctrl_summary(
+                self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
+            )
+
+            attempt_log = {
+                "attempt": attempt_idx + 1,
+                "method": actual_method,
+                "send_button_before": attempt_send_btn_summary,
+                "send_button_after": send_btn_after,
+                "post_send_probe_count": post_send_probe_count,
+                "post_send_visible": post_send_visible,
+            }
+            attempts_log.append(attempt_log)
+            print(f"[send attempt {attempt_idx+1}/{max_attempts}] method={actual_method} post_probe_count={post_send_probe_count}")
+
+            # Early-exit check: if probe count already increased, we are done
+            if (
+                message_probe
+                and post_send_probe_count is not None
+                and probe_post_paste_count is not None
+                and post_send_probe_count >= probe_post_paste_count + 1
+            ):
+                print(f"[send attempt {attempt_idx+1}] Early send confirmation by probe count — stopping retries.")
+                break
+
+            # Also stop if send button became unavailable (message likely accepted)
+            if self._is_send_button_unavailable(send_btn_after):
+                print(f"[send attempt {attempt_idx+1}] Send button became unavailable — stopping retries.")
+                break
+
+            if attempt_idx < max_attempts - 1:
+                print(f"[send attempt {attempt_idx+1}] No immediate confirmation signal; waiting {retry_wait_sec}s before retry...")
+                time.sleep(retry_wait_sec)
+
         return {
             "composer_rect": composer_rect.to_dict(),
             "send_button": self._ctrl_summary(send_button),
             "paste_completed": True,
             "send_attempted": True,
-            "send_method": self.config.get("send_method", "button"),
+            "send_method": base_send_method,
             "message_probe_post_paste_count": probe_post_paste_count,
+            "send_attempts_log": attempts_log,
+            "send_attempts_count": len(attempts_log),
         }
 
     def maybe_scroll_to_bottom(self) -> None:
@@ -603,8 +706,21 @@ class CodexBridge:
         baseline_count: int,
         post_paste_count: int,
         composer_rect: Rect,
+        report_path: Path | None = None,
+        report_started_at: float | None = None,
+        observation_window_sec: float = 8.0,
     ) -> dict[str, Any]:
-        timeout_sec = float(self.config.get("send_confirmation_timeout_sec", 6.0))
+        """
+        Expanded send-confirmation with three evidence tiers:
+          A (Strong)  : probe count increased after send
+          B (Medium)  : send button unavailable + composer cleared of probe
+          C (Weak)    : composer cleared of probe + report file appeared/updated
+                        -> allows proceeding to file-first wait
+
+        After the primary poll loop times out, a short observation window
+        (observation_window_sec) is checked before giving up.
+        """
+        timeout_sec = float(self.config.get("send_confirmation_timeout_sec", 8.0))
         poll_sec = float(self.config.get("send_confirmation_poll_sec", 0.5))
         deadline = time.time() + timeout_sec
         last_count = post_paste_count
@@ -613,6 +729,16 @@ class CodexBridge:
         last_send_button = self._ctrl_summary(
             self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
         )
+
+        def _report_file_updated() -> bool:
+            """True if report_path exists and mtime > report_started_at."""
+            if report_path is None or report_started_at is None:
+                return False
+            try:
+                return report_path.exists() and report_path.stat().st_mtime > report_started_at
+            except OSError:
+                return False
+
         while time.time() < deadline:
             refreshed_root = self._find_root_web_area()
             if refreshed_root is not None:
@@ -627,6 +753,8 @@ class CodexBridge:
             last_matches = matches
             last_visible_count = len(texts)
             last_send_button = send_button_summary
+
+            # Evidence A (Strong): probe count increased
             if count >= max(baseline_count + 1, post_paste_count + 1):
                 return {
                     "success": True,
@@ -637,42 +765,125 @@ class CodexBridge:
                     "post_send_visible_text_count": len(texts),
                     "post_send_send_button": send_button_summary,
                     "composer_probe_status": "not_checked",
+                    "evidence_tier": "A_strong",
                 }
-            if count >= baseline_count + 1 and send_button_unavailable:
+
+            # Evidence B (Medium): send button unavailable + composer cleared
+            if send_button_unavailable:
                 composer_probe = self._probe_in_composer(composer_rect, message_probe)
                 if not composer_probe["probe_present"]:
                     status = (
-                        "confirmed_by_probe_visible_and_cleared_composer"
+                        "confirmed_by_button_unavailable_and_cleared_composer"
                         if composer_probe["status"] == "probe_not_present"
-                        else "delivered_with_weak_confirmation"
-                    )
-                    reason = (
-                        "Message probe was visible after send and no longer present in composer."
-                        if composer_probe["status"] == "probe_not_present"
-                        else "Message probe was visible after send and send button was unavailable; composer copy was empty."
+                        else "confirmed_by_button_unavailable_composer_empty"
                     )
                     return {
                         "success": True,
                         "status": status,
-                        "reason": reason,
+                        "reason": "Send button became unavailable and composer no longer contains message probe.",
                         "message_probe_post_send_count": count,
                         "post_send_matching_texts": matches,
                         "post_send_visible_text_count": len(texts),
                         "post_send_send_button": send_button_summary,
                         "composer_probe_status": composer_probe["status"],
+                        "evidence_tier": "B_medium",
                     }
+
+            # Evidence C (Weak, early): composer cleared + report file already updating
+            composer_probe = self._probe_in_composer(composer_rect, message_probe)
+            if not composer_probe["probe_present"] and _report_file_updated():
+                return {
+                    "success": True,
+                    "status": "confirmed_by_composer_cleared_and_file_updating",
+                    "reason": "Composer no longer contains message probe and report file has appeared/updated.",
+                    "message_probe_post_send_count": count,
+                    "post_send_matching_texts": matches,
+                    "post_send_visible_text_count": len(texts),
+                    "post_send_send_button": send_button_summary,
+                    "composer_probe_status": composer_probe["status"],
+                    "evidence_tier": "C_weak",
+                }
+
             time.sleep(poll_sec)
 
-        composer_probe = self._probe_in_composer(composer_rect, message_probe)
-        reason = "Message delivery could not be confirmed before timeout."
-        if composer_probe["probe_present"]:
-            reason = "Message probe was still present in the composer after the send attempt."
+        # --- Primary loop timed out; run short observation window ---
+        obs_deadline = time.time() + observation_window_sec
+        print(f"[confirm] Primary poll timeout; running {observation_window_sec}s observation window...")
+        while time.time() < obs_deadline:
+            time.sleep(1.0)
+            refreshed_root = self._find_root_web_area()
+            if refreshed_root is not None:
+                self.root = refreshed_root
+            count, matches, texts = self.count_token_in_ui(message_probe)
+            send_button_summary = self._ctrl_summary(
+                self._find_send_button(self._find_button_by_name(self.config["toolbar_anchor_button_name"]))
+            )
+            send_button_unavailable = self._is_send_button_unavailable(send_button_summary)
+            last_count = count
+            last_matches = matches
+            last_visible_count = len(texts)
+            last_send_button = send_button_summary
+
+            # Evidence A
+            if count >= max(baseline_count + 1, post_paste_count + 1):
+                return {
+                    "success": True,
+                    "status": "confirmed_by_probe_count_increase_obs_window",
+                    "reason": "Probe count increased during observation window.",
+                    "message_probe_post_send_count": count,
+                    "post_send_matching_texts": matches,
+                    "post_send_visible_text_count": len(texts),
+                    "post_send_send_button": send_button_summary,
+                    "composer_probe_status": "not_checked",
+                    "evidence_tier": "A_strong_obs",
+                }
+
+            # Evidence B
+            if send_button_unavailable:
+                composer_probe = self._probe_in_composer(composer_rect, message_probe)
+                if not composer_probe["probe_present"]:
+                    return {
+                        "success": True,
+                        "status": "confirmed_by_button_unavailable_obs_window",
+                        "reason": "Send button unavailable and composer cleared during observation window.",
+                        "message_probe_post_send_count": count,
+                        "post_send_matching_texts": matches,
+                        "post_send_visible_text_count": len(texts),
+                        "post_send_send_button": send_button_summary,
+                        "composer_probe_status": composer_probe["status"],
+                        "evidence_tier": "B_medium_obs",
+                    }
+
+            # Evidence C
+            composer_probe = self._probe_in_composer(composer_rect, message_probe)
+            if not composer_probe["probe_present"] and _report_file_updated():
+                return {
+                    "success": True,
+                    "status": "confirmed_by_file_updating_obs_window",
+                    "reason": "Composer cleared and report file updating during observation window.",
+                    "message_probe_post_send_count": count,
+                    "post_send_matching_texts": matches,
+                    "post_send_visible_text_count": len(texts),
+                    "post_send_send_button": send_button_summary,
+                    "composer_probe_status": composer_probe["status"],
+                    "evidence_tier": "C_weak_obs",
+                }
+
+        # Nothing confirmed — build diagnostic reason
+        composer_probe_final = self._probe_in_composer(composer_rect, message_probe)
+        if composer_probe_final["probe_present"]:
+            reason = "Message probe was still present in the composer after all send attempts."
         elif not self._is_send_button_unavailable(last_send_button):
-            reason = "Message probe did not show a new visible instance and the send button remained available after the send attempt."
+            reason = (
+                "Message probe did not show a new visible instance and the send button remained "
+                "available after all send attempts and observation window. "
+                "Composer was cleared but no other confirmation signal appeared."
+            )
         elif last_count < baseline_count + 1:
-            reason = "Message probe never appeared in visible Codex text after the send attempt."
-        elif last_count < post_paste_count + 1:
+            reason = "Message probe never appeared in visible Codex text after all send attempts."
+        else:
             reason = "Message probe did not show a new visible instance beyond the pre-send state."
+
         return {
             "success": False,
             "status": "send_not_confirmed",
@@ -681,7 +892,8 @@ class CodexBridge:
             "post_send_matching_texts": last_matches,
             "post_send_visible_text_count": last_visible_count,
             "post_send_send_button": last_send_button,
-            "composer_probe_status": composer_probe["status"],
+            "composer_probe_status": composer_probe_final["status"],
+            "evidence_tier": "none",
         }
 
     def _ctrl_summary(self, ctrl: auto.Control | None) -> dict[str, Any] | None:
@@ -1177,7 +1389,8 @@ def run_send_or_demo(
             # Legacy ACK-token mode (probe mode, no report path)
             success, reply_text, extra = bridge.wait_for_reply(token, baseline_count=baseline_count)
         else:
-            # Step A: Hard send-confirmation gate
+            # Step A: Send confirmation gate (with retry and expanded evidence)
+            confirmation: dict[str, Any] = {"success": True, "status": "no_probe_required", "reason": "no_probe_required"}
             if message_probe:
                 composer_rect_dict = send_meta["composer_rect"]
                 confirmation = bridge.confirm_message_delivery(
@@ -1190,25 +1403,39 @@ def run_send_or_demo(
                         right=int(composer_rect_dict["right"]),
                         bottom=int(composer_rect_dict["bottom"]),
                     ),
+                    report_path=report_path,
+                    report_started_at=send_started_at,
                 )
                 payload["message_probe_post_send_count"] = confirmation["message_probe_post_send_count"]
                 payload["send_confirmation_status"] = confirmation["status"]
                 payload["send_confirmation_reason"] = confirmation["reason"]
                 payload["send_confirmed"] = bool(confirmation["success"])
                 payload["send_confirm_reason"] = confirmation["reason"]
+                payload["send_evidence_tier"] = confirmation.get("evidence_tier", "")
 
-                if not confirmation["success"]:
-                    payload["status"] = "send_not_confirmed"
-                    payload["success"] = False
-                    payload["message"] = f"Send not confirmed: {confirmation['reason']}"
-                    write_log(log_path, payload)
-                    return DemoResult(
-                        False, "send_not_confirmed", payload["message"], log_path,
-                        sent_prompt=prompt, message_probe=message_probe,
-                        send_confirmation_status=confirmation["status"],
-                        send_confirmation_reason=confirmation["reason"],
-                    )
-                print(f"Send confirmed: {confirmation['status']}")
+                if confirmation["success"]:
+                    print(f"Send confirmed: {confirmation['status']} (tier={confirmation.get('evidence_tier','')})")
+                else:
+                    print(f"Send confirmation failed: {confirmation['reason']}")
+                    # Do NOT early-exit here when report_path is provided —
+                    # allow file-first wait to determine if Codex actually received the message.
+                    # Only hard-exit if there is no report_path to observe.
+                    if report_path is None:
+                        payload["status"] = "send_not_confirmed"
+                        payload["success"] = False
+                        payload["message"] = f"Send not confirmed: {confirmation['reason']}"
+                        write_log(log_path, payload)
+                        return DemoResult(
+                            False, "send_not_confirmed", payload["message"], log_path,
+                            sent_prompt=prompt, message_probe=message_probe,
+                            sent_message_source=sent_message_source,
+                            message_path=message_path,
+                            send_confirmation_status=confirmation["status"],
+                            send_confirmation_reason=confirmation["reason"],
+                        )
+                    # With report_path: proceed to file-first wait even on weak/failed confirm.
+                    # The file-first result will be the authoritative verdict.
+                    print("[send-and-wait] Proceeding to file-first wait despite weak send confirmation.")
             else:
                 payload["send_confirmed"] = True
                 payload["send_confirm_reason"] = "no_probe_required"
@@ -1266,6 +1493,8 @@ def run_send_or_demo(
                     return DemoResult(
                         True, "report_file_ready", payload["message"], log_path,
                         sent_prompt=prompt, message_probe=message_probe,
+                        sent_message_source=sent_message_source,
+                        message_path=message_path,
                         send_confirmation_status=payload.get("send_confirmation_status", ""),
                         send_confirmation_reason=payload.get("send_confirmation_reason", ""),
                         report_ready=True, report_ready_reason="ok",
@@ -1273,19 +1502,35 @@ def run_send_or_demo(
                         ui_candidate_reject_reason=payload.get("ui_candidate_reject_reason", ""),
                     )
                 else:
+                    # If send was never confirmed, prefer send_not_confirmed as primary status
+                    send_was_confirmed = bool(payload.get("send_confirmed", True))
+                    if not send_was_confirmed:
+                        primary_status = "send_not_confirmed"
+                        primary_message = (
+                            f"Send not confirmed and report file never appeared. "
+                            f"Send reason: {payload.get('send_confirm_reason', '')}. "
+                            f"File reason: {file_reason}"
+                        )
+                    else:
+                        primary_status = f"report_file_not_ready: {file_reason}"
+                        primary_message = f"Report file not ready: {file_reason}"
+
                     payload["success"] = False
-                    payload["status"] = f"report_file_not_ready: {file_reason}"
-                    payload["message"] = f"Report file not ready: {file_reason}"
+                    payload["status"] = primary_status
+                    payload["message"] = primary_message
                     write_log(log_path, payload)
                     return DemoResult(
-                        False, payload["status"], payload["message"], log_path,
+                        False, primary_status, primary_message, log_path,
                         sent_prompt=prompt, message_probe=message_probe,
+                        sent_message_source=sent_message_source,
+                        message_path=message_path,
                         send_confirmation_status=payload.get("send_confirmation_status", ""),
                         send_confirmation_reason=payload.get("send_confirmation_reason", ""),
                         report_ready=False, report_ready_reason=file_reason,
                         ui_candidate_rejected=payload.get("ui_candidate_rejected", False),
                         ui_candidate_reject_reason=payload.get("ui_candidate_reject_reason", ""),
                     )
+
 
             else:
                 # No report_path provided — fall back to UI-based detection (legacy)
