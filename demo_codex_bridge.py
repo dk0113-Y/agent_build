@@ -1059,10 +1059,6 @@ def run_send_or_demo(
         "ui_candidate_reply_length": 0,
         "ui_candidate_rejected": False,
         "ui_candidate_reject_reason": "",
-        "assistant_turn_baseline": None,
-        "assistant_turn_after_send": None,
-        "user_turn_baseline": None,
-        "user_turn_after_send": None,
     }
     if message_path:
         payload["message_path"] = message_path
@@ -1359,6 +1355,25 @@ def run_send_or_demo(
 
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Local Codex UI bridge demo.")
+    parser.add_argument("--config", type=Path, default=Path(__file__).with_name("config.json"))
+    parser.add_argument("--inspect-ui", action="store_true", help="Inspect candidate windows/controls and dump JSON.")
+    parser.add_argument("--send-only", action="store_true", help="Focus window, paste prompt, optionally send, but do not wait.")
+    parser.add_argument("--send-and-wait", action="store_true", help="Send arbitrary message and wait for report file (file-first mode).")
+    parser.add_argument("--expect-substring", type=str, help="Optionally verify content-level validation using expected substring text.")
+    parser.add_argument("--demo", action="store_true", help="Run the full bridge demo: focus, send, wait, read, log.")
+    parser.add_argument("--dry-run", action="store_true", help="Print and log the planned action without sending.")
+    parser.add_argument("--manual-confirm-send", action="store_true", help="Pause after paste and wait for Enter in console.")
+    parser.add_argument("--message-file", type=Path, help="Read message text from a file and send it to Codex.")
+    parser.add_argument("--message-text", help="Send the provided text to Codex.")
+    parser.add_argument("--output-json", type=Path, help="Optional specific file to dump machine-readable status dict.")
+    parser.add_argument("--report-path", type=Path, default=None, help="Path to codex_report.md to watch as primary success signal (file-first mode).")
+    parser.add_argument("--round-id", type=str, default="round_xxxx", help="Round ID used for codex_report_is_ready() check.")
+    parser.add_argument("--report-wait-sec", type=float, default=300.0, help="Max seconds to wait for the report file to be ready (file-first mode).")
+    return parser.parse_args()
+
+
 def main() -> int:
     args = parse_args()
     if not any([args.inspect_ui, args.send_only, args.demo, args.send_and_wait]):
@@ -1413,26 +1428,44 @@ def main() -> int:
         
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
-        out_dict = {
+        # Read the run log payload written by run_send_or_demo and sync all
+        # file-first status fields directly — no more slim 5-field dict.
+        _FILE_FIRST_FIELDS = [
+            "success", "status", "message", "reply_text",
+            "send_confirmed", "send_confirm_reason",
+            "send_confirmation_status", "send_confirmation_reason",
+            "report_path",
+            "report_exists_before_send", "report_mtime_before_send",
+            "report_exists_after_wait", "report_mtime_after_wait",
+            "report_updated_after_send", "report_size_after_wait",
+            "report_ready", "report_ready_reason",
+            "ui_candidate_reply_text", "ui_candidate_reply_length",
+            "ui_candidate_rejected", "ui_candidate_reject_reason",
+            "message_probe", "message_probe_baseline_count",
+            "message_probe_post_paste_count", "message_probe_post_send_count",
+        ]
+        out_dict: dict[str, Any] = {
             "success": result.success,
             "status": result.status,
             "message": result.message,
             "log_path": str(result.log_path),
             "reply_text": result.reply_text,
         }
-        
-        # Merge expected testing status properties
-        if hasattr(result, "status"):
-            with open(result.log_path, "r", encoding="utf-8") as f:
-                saved_payload = json.load(f)
-                if "reply_matches_expectation" in saved_payload:
-                    out_dict["reply_matches_expectation"] = saved_payload["reply_matches_expectation"]
-                    out_dict["expected_substring"] = saved_payload.get("reply_detection", {}).get("expected_substring", "")
-                    out_dict["failure_reason"] = saved_payload.get("reply_detection", {}).get("failure_reason", "")
-                    out_dict["candidate_text"] = saved_payload.get("reply_detection", {}).get("candidate_text", "")
-
+        try:
+            with open(result.log_path, "r", encoding="utf-8") as _f:
+                saved_payload = json.load(_f)
+            for _k in _FILE_FIRST_FIELDS:
+                if _k in saved_payload and _k not in out_dict:
+                    out_dict[_k] = saved_payload[_k]
+            # Legacy compat fields
+            if "reply_matches_expectation" in saved_payload:
+                out_dict["reply_matches_expectation"] = saved_payload["reply_matches_expectation"]
+            if "ui_transcript_path" in saved_payload:
+                out_dict["ui_transcript_path"] = saved_payload["ui_transcript_path"]
+        except Exception as _e:
+            out_dict["output_json_sync_error"] = str(_e)
         args.output_json.write_text(json.dumps(out_dict, indent=2), "utf-8")
-        
+
     return 0 if result.success else 1
 
 

@@ -163,44 +163,53 @@ def main():
             res = subprocess.run(codex_cmd)
             
             run_log["codex_bridge_output_json"] = str(bridge_out_json)
-            real_codex_worked = False
             codex_gate_passed = False
             codex_gate_reason = "bridge_not_run"
             codex_report_nonempty = False
             codex_report_ready = False
             codex_report_ready_reason = ""
-            codex_report_matches_bridge_reply = False
-            
-            bridge_reply_text = ""
+            codex_send_confirmed = False
+            codex_send_confirm_reason = ""
+            codex_report_updated_after_send = False
+            codex_ui_candidate_rejected = False
+            codex_ui_candidate_reject_reason = ""
+            bridge_success = False
+
+            # --- Read output_json (file-first gate only needs success flag + file on disk) ---
             if bridge_out_json.exists():
                 try:
                     b_data = json.loads(bridge_out_json.read_text("utf-8"))
                     run_log["codex_bridge_status"] = b_data.get("status", "")
-                    bridge_reply_text = b_data.get("reply_text", "").strip()
-                    has_reply = bool(bridge_reply_text)
-                    run_log["codex_bridge_reply_detected"] = has_reply
-                    if b_data.get("success", False) and has_reply:
-                        real_codex_worked = True
+                    bridge_success = bool(b_data.get("success", False))
+                    # Read diagnostic fields propagated from demo_codex_bridge
+                    codex_send_confirmed = bool(b_data.get("send_confirmed", False))
+                    codex_send_confirm_reason = b_data.get("send_confirm_reason", "")
+                    codex_report_updated_after_send = bool(b_data.get("report_updated_after_send", False))
+                    codex_ui_candidate_rejected = bool(b_data.get("ui_candidate_rejected", False))
+                    codex_ui_candidate_reject_reason = b_data.get("ui_candidate_reject_reason", "")
+                    # Note: reply_text is no longer used as a success signal
+                    run_log["codex_bridge_reply_detected"] = bool(b_data.get("reply_text", "").strip())
                 except Exception as e:
-                    codex_gate_reason = f"output_json_parse_error: {e}"
-            
-            # Codex output gate — multi-level:
-            # L1: output_json success + non-empty reply
-            # L2: report is non-empty
-            # L3: report text matches bridge reply (same-source)
-            # L4: codex_report_is_ready() semantic check
-            rep_file_obj = round_dir / "codex_report.md"
-            if bridge_out_json.exists() and bridge_reply_text:
-                if rep_file_obj.exists():
+                    codex_gate_reason = f"codex_output_json_parse_error: {e}"
+
+            # --- File-first Codex gate ---
+            # L1: output_json must exist and report bridge success
+            # L2: codex_report.md must exist and be non-empty
+            # L3: codex_report_is_ready() must pass
+            if not bridge_out_json.exists():
+                codex_gate_reason = "codex_output_json_missing"
+            elif not bridge_success:
+                codex_gate_reason = "codex_bridge_returned_failure"
+            else:
+                rep_file_obj = round_dir / "codex_report.md"
+                if not rep_file_obj.exists():
+                    codex_gate_reason = "codex_report_file_missing"
+                else:
                     report_on_disk = rep_file_obj.read_text("utf-8").strip()
                     codex_report_nonempty = bool(report_on_disk)
-                    # L3: consistency check
-                    if report_on_disk == bridge_reply_text:
-                        codex_report_matches_bridge_reply = True
+                    if not codex_report_nonempty:
+                        codex_gate_reason = "codex_report_file_not_ready"
                     else:
-                        codex_gate_reason = "report_reply_mismatch"
-                    # L4: semantic readiness
-                    if codex_report_matches_bridge_reply:
                         try:
                             from automation_protocol import codex_report_is_ready
                             ready, ready_reason = codex_report_is_ready(current_round_id, report_on_disk)
@@ -210,34 +219,34 @@ def main():
                                 codex_gate_passed = True
                                 codex_gate_reason = "ok"
                             else:
-                                codex_gate_reason = f"codex_report_not_ready: {ready_reason}"
+                                codex_gate_reason = f"codex_report_file_not_ready: {ready_reason}"
                         except Exception as e:
-                            codex_gate_reason = f"codex_report_is_ready_exception: {e}"
-                else:
-                    codex_gate_reason = "codex_report_empty_or_missing"
-            elif not bridge_out_json.exists():
-                codex_gate_reason = "output_json_missing"
-            elif not bridge_reply_text:
-                codex_gate_reason = "output_json_success_false_or_empty"
-                
+                            codex_gate_reason = f"codex_output_json_parse_error: {e}"
+
             run_log["codex_output_gate_passed"] = codex_gate_passed
             run_log["codex_report_nonempty"] = codex_report_nonempty
             run_log["codex_output_gate_reason"] = codex_gate_reason
             run_log["codex_report_ready"] = codex_report_ready
             run_log["codex_report_ready_reason"] = codex_report_ready_reason
-            run_log["codex_report_matches_bridge_reply"] = codex_report_matches_bridge_reply
-            
+            run_log["codex_send_confirmed"] = codex_send_confirmed
+            run_log["codex_send_confirm_reason"] = codex_send_confirm_reason
+            run_log["codex_report_updated_after_send"] = codex_report_updated_after_send
+            run_log["codex_ui_candidate_rejected"] = codex_ui_candidate_rejected
+            run_log["codex_ui_candidate_reject_reason"] = codex_ui_candidate_reject_reason
+
+            # Bridge returncode is now only informational — gate is unconditional
             if res.returncode != 0 and not codex_gate_passed:
-                summary["stop_reason"] = "codex_bridge_failed"
-                print(f"Codex bridge strictly failed. Gate reason: {codex_gate_reason}")
+                summary["stop_reason"] = codex_gate_reason
+                print(f"Codex bridge failed (returncode={res.returncode}). Gate reason: {codex_gate_reason}")
                 break
-            
+
             if not codex_gate_passed:
-                summary["stop_reason"] = f"codex_output_gate_failed: {codex_gate_reason}"
+                summary["stop_reason"] = codex_gate_reason
                 print(f"Codex artifact gate not satisfied: {codex_gate_reason}")
                 break
-                
-            if real_codex_worked:
+
+            # Mark used_real_codex only when bridge reported success (not synthetic fallback)
+            if bridge_success:
                 run_log["used_real_codex"] = True
             else:
                 run_log["triggered_synthetic_codex_fallback"] = True

@@ -61,6 +61,7 @@ def _file_gate(report: Path, round_id: str) -> tuple[bool, str]:
     """
     Validate the report file directly — file-first approach.
     Does NOT use UI reply_text. Report must exist, be non-empty, and pass readiness.
+    Fail-closed: any exception in readiness check is treated as a gate failure.
     """
     if not report.exists():
         return False, "report_file_missing"
@@ -76,8 +77,9 @@ def _file_gate(report: Path, round_id: str) -> tuple[bool, str]:
         if not ready:
             return False, f"codex_report_not_ready: {reason}"
     except Exception as e:
-        print(f"Warning: could not run codex_report_is_ready(): {e}")
+        return False, f"codex_report_is_ready_exception: {e}"
     return True, "ok"
+
 
 
 def main():
