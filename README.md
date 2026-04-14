@@ -17,6 +17,40 @@
 - 这份文档负责三仓文件地图、读取顺序、文件角色边界、任务型读取建议。
 - README 只保留总览，不再承担全部本地取证说明。
 
+## 训练可复现性入口
+
+正式训练工程现在已经正式支持两种预算模式：
+
+- `budget_mode=env_steps`
+- `budget_mode=episodes`
+
+其中 `episodes` 模式用于把训练停止条件、eval 节奏和日志主轴切到 train episode 维度；单图内部步数上限仍由训练工程里的 `max_episode_steps` 控制。
+
+训练 episode 也已经支持显式固定 seed 序列：
+
+- `use_fixed_train_episode_seeds`
+- `fixed_train_episode_seed_base`
+
+这意味着在相同配置下，相同 `train_episode_idx` 会对应同一张训练地图，而不再依赖全局随机流“碰巧一致”。
+
+`train_episodes.csv` 现在是 train-side 的主监控文件之一，至少可以用于核验这些字段：
+
+- `train_episode_idx`
+- `episode_seed`
+- `map_fingerprint`
+
+另外还支持可选的 runtime determinism 增强项：
+
+- `strict_reproducibility`
+
+它的作用是进一步收紧 CUDA / backend 侧的非确定性；但它不替代 episode 级固定 seed。当前仓库默认仍可在 `strict_reproducibility=false` 下做主线实验，把 fixed episode seed 作为更核心的可复现性基础。
+
+像“短可复现性验证”这种工作，建议放在独立验证目录里，例如：
+
+- `automation_rounds/repro_check_0001/`
+
+这类目录用于本地 smoke、episode-seed 对齐核验、strict runtime determinism A/B 等短任务，不应占用正式主线 round 编号。正式 `round_000x` 应留给真正的性能决策轮、formal bundle 构建和 exchange publish。
+
 ## 角色分工
 
 - `../代码1`

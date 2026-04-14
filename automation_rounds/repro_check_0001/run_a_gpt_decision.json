@@ -1,0 +1,89 @@
+{
+  "schema_version": "2.0",
+  "round_id": "round_9001",
+  "experiment_mode": "formal_train",
+  "source_of_truth_repo": "dk0113-Y/DRL-path-finding",
+  "local_execution_repo_path": "C:\\Users\\Dk\\Desktop\\SCI\\代码1",
+  "decision_status": "run_next_round",
+  "evaluation_mode": "formal_artifact_review",
+  "comparability_group": null,
+  "baseline_round_id": null,
+  "baseline_commit_sha": "504d0b58d09ccdde096787845d2591a433e13828",
+  "decision_zone": "insufficient_evidence",
+  "stop_window_state": {
+    "window_basis": "local_repro_validation",
+    "comparability_status": "not_applicable",
+    "recommended_action": "run_next_round"
+  },
+  "manual_review_reasons": [],
+  "insufficient_evidence_flags": [
+    "repro_validation_only_not_formal_round"
+  ],
+  "target_program": "train_q_agent.py",
+  "run_args": {
+    "cli_args": [
+      "--device",
+      "cpu",
+      "--seed",
+      "0",
+      "--output-root",
+      "outputs",
+      "--run-name",
+      "repro_check0001_episode20_run_a",
+      "--budget-mode",
+      "episodes",
+      "--total-train-episodes",
+      "20",
+      "--warmup-episodes",
+      "2",
+      "--min-replay-size",
+      "1000000",
+      "--eval-interval-episodes",
+      "5",
+      "--log-interval-episodes",
+      "5",
+      "--train-print-interval-episodes",
+      "5",
+      "--use-fixed-train-episode-seeds",
+      "--fixed-train-episode-seed-base",
+      "20259323",
+      "--use-fixed-eval-seeds",
+      "--fixed-eval-seed-base",
+      "20260323",
+      "--fixed-final-probe-seed-base",
+      "20261323",
+      "--no-strict-reproducibility",
+      "--episode-print-interval",
+      "0"
+    ],
+    "run_name": "repro_check0001_episode20_run_a",
+    "output_root": "outputs",
+    "notes": "Short reproducibility validation only; keep episode-budget and fixed train episode seeds identical across paired runs."
+  },
+  "parameter_changes": [],
+  "codex_analysis_focus": {
+    "compare_targets": [
+      "paired_repro_run"
+    ],
+    "required_logs": [
+      "train_episodes.csv",
+      "train_steps.csv",
+      "metric_snapshot.json",
+      "benchmark_summary.json",
+      "config_snapshot.json",
+      "artifact_index.json"
+    ],
+    "required_plots": [],
+    "questions": [
+      "Do the paired short runs align episode-by-episode on train_episode_idx, episode_seed, and map_fingerprint?",
+      "If train maps align but final metrics differ, is the remaining variance more likely from learner or runtime nondeterminism?",
+      "Does this validation support keeping strict_reproducibility disabled for the next formal mainline decision?"
+    ],
+    "expected_output_style": "Write a short Markdown reproducibility report grounded in train_episodes.csv and formal artifacts."
+  },
+  "reference_targets": {
+    "best_known_reference": null,
+    "manual_compare_targets": []
+  },
+  "controller_notes": "This decision is a local reproducibility check stored under automation_rounds/repro_check_0001 and must not be treated as a published formal mainline round."
+}
