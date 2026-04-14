@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-"""Publish a local automation round to the exchange repository."""
+"""Publish a local automation round to the exchange repository.
+
+See docs/codex_local_index.md for the local/exchange file map before tracing publish flow.
+"""
 
 from __future__ import annotations
 

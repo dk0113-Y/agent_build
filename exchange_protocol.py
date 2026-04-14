@@ -25,6 +25,7 @@ def read_json(path: Path) -> dict[str, Any]:
 def stable_context_files_for_mode(experiment_mode: str) -> list[str]:
     if experiment_mode == "formal_train":
         return [
+            "docs/gpt_index_guide.md",
             "docs/project_context.md",
             "docs/automation_scope.md",
             "docs/reading_order.md",
@@ -45,6 +46,7 @@ def stable_context_files_for_mode(experiment_mode: str) -> list[str]:
 def recommended_entry_docs_for_mode(experiment_mode: str) -> list[str]:
     if experiment_mode == "formal_train":
         return [
+            "docs/gpt_index_guide.md",
             "docs/reading_order.md",
             "docs/project_context.md",
             "docs/current_mainline.md",

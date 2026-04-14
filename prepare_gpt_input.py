@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-"""Render a GPT-consumable input package for a completed automation round."""
+"""Render a GPT-consumable input package for a completed automation round.
+
+See docs/codex_local_index.md for the local file map before tracing bundle inputs.
+"""
 
 from __future__ import annotations
 

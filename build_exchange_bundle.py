@@ -1,5 +1,8 @@
 #!/usr/bin/env python
-"""Build a formal_train automation round from an existing real run directory."""
+"""Build a formal_train automation round from an existing real run directory.
+
+See docs/codex_local_index.md for the local file map before tracing cross-repo roles.
+"""
 
 from __future__ import annotations
 
