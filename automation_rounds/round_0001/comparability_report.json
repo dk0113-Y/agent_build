@@ -1,0 +1,111 @@
+{
+  "schema_version": "formal_exchange/v2",
+  "artifact_type": "comparability_report",
+  "round_id": "round_0001",
+  "generated_at": "2026-04-14T09:15:08+08:00",
+  "experiment_mode": "formal_train",
+  "source_of_truth_repo": "dk0113-Y/DRL-path-finding",
+  "local_execution_repo_path": "C:\\Users\\Dk\\Desktop\\SCI\\代码1",
+  "evaluation_mode": "formal_artifact_review",
+  "target_run_dir": "outputs/sched_turn003_revisit010_entry8_20260411_014043",
+  "baseline_round_id": "round_hist_ref",
+  "baseline_run_dir": "outputs/sched_turn005_revisit010_entry8_20260410_234142",
+  "baseline_commit_sha": "11f198a74d66f6984eaf0e5742bd2761273a4547",
+  "historical_baseline_summary_path": "historical_baseline_summary.json",
+  "historical_calibration": {
+    "available": true,
+    "insufficient_history_for_calibration": true,
+    "run_count_total": 19
+  },
+  "comparability_group": "formal_mainline_v1__bf21a9e8fbc5",
+  "baseline_comparability_group": "formal_mainline_v1__bf21a9e8fbc5",
+  "comparability_status": "bootstrap_comparable",
+  "checks": {
+    "baseline_available": true,
+    "same_comparability_group": true,
+    "same_train_steps_header": true,
+    "same_eval_metrics_header": true,
+    "same_final_probe_header": true,
+    "same_final_env_steps": true,
+    "target_has_full_config_snapshot": false,
+    "baseline_has_full_config_snapshot": false
+  },
+  "metric_comparison": {
+    "final_probe_primary_metrics": {
+      "success_rate": {
+        "target": 0.5625,
+        "baseline": 0.875,
+        "delta": -0.3125
+      },
+      "coverage": {
+        "target": 0.8923500180244446,
+        "baseline": 0.9108062386512756,
+        "delta": -0.018456220626831055
+      },
+      "reward": {
+        "target": 88.30387115478516,
+        "baseline": 120.79263305664062,
+        "delta": -32.48876190185547
+      }
+    },
+    "final_probe_secondary_metrics": {
+      "episode_length": {
+        "target": 479.75,
+        "baseline": 337.6875,
+        "delta": 142.0625
+      },
+      "repeat_visit_ratio": {
+        "target": 0.32285091280937195,
+        "baseline": 0.2270648330450058,
+        "delta": 0.09578607976436615
+      }
+    },
+    "final_probe_stability_metrics": {
+      "timeout_flag": {
+        "target": 0.4375,
+        "baseline": 0.125,
+        "delta": 0.3125
+      },
+      "stall_trigger_count": {
+        "target": 238.4375,
+        "baseline": 111.6875,
+        "delta": 126.75
+      },
+      "zero_info_step_count": {
+        "target": 313.125,
+        "baseline": 172.75,
+        "delta": 140.375
+      },
+      "recent_revisit_count": {
+        "target": 124.375,
+        "baseline": 88.875,
+        "delta": 35.5
+      }
+    }
+  },
+  "efficiency_comparison": {
+    "total_runtime_sec": {
+      "target": null,
+      "baseline": null,
+      "delta": null
+    },
+    "env_steps_to_best": {
+      "target": 288000,
+      "baseline": 288000,
+      "delta": 0
+    }
+  },
+  "insufficient_evidence_flags": [
+    "backfilled_from_historical_run",
+    "train_config_unavailable_in_backfill_context",
+    "timing_summary_unavailable",
+    "total_runtime_unavailable",
+    "complete_train_config_not_recoverable_without_checkpoint_loader",
+    "train_config_unavailable",
+    "bootstrap_thresholds_required"
+  ],
+  "notes": [
+    "Observed contracts match, but one or both runs only have bootstrap/backfilled config metadata.",
+    "Historical baseline calibration is bootstrap-only."
+  ]
+}

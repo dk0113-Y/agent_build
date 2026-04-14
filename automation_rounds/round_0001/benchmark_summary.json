@@ -1,0 +1,22 @@
+{
+  "schema_version": "formal_train_artifacts/v1",
+  "artifact_type": "benchmark_summary",
+  "experiment_mode": "formal_train",
+  "source_of_truth_repo": "dk0113-Y/DRL-path-finding",
+  "run_dir": "outputs/sched_turn003_revisit010_entry8_20260411_014043",
+  "generated_at": "2026-04-14T09:09:02+08:00",
+  "run_mode": "historical_backfill",
+  "total_runtime_sec": null,
+  "total_runtime_hms": null,
+  "runtime_performance_switches": {},
+  "timing_switches": {},
+  "timing_summary": {},
+  "env_steps_to_best": 288000,
+  "insufficient_evidence_flags": [
+    "backfilled_from_historical_run",
+    "timing_summary_unavailable",
+    "total_runtime_unavailable",
+    "train_config_unavailable_in_backfill_context"
+  ],
+  "local_execution_repo_path": "C:\\Users\\Dk\\Desktop\\SCI\\代码1"
+}

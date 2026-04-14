@@ -1,0 +1,144 @@
+{
+  "schema_version": "formal_train_artifacts/v1",
+  "artifact_type": "artifact_index",
+  "experiment_mode": "formal_train",
+  "run_dir": "outputs/sched_turn003_revisit010_entry8_20260411_014043",
+  "generated_at": "2026-04-14T09:09:02+08:00",
+  "csv": [
+    {
+      "path": "logs/train_steps.csv",
+      "exists": true,
+      "required": true,
+      "category": "csv"
+    },
+    {
+      "path": "logs/train_episodes.csv",
+      "exists": true,
+      "required": true,
+      "category": "csv"
+    },
+    {
+      "path": "logs/eval_metrics.csv",
+      "exists": true,
+      "required": true,
+      "category": "csv"
+    },
+    {
+      "path": "logs/final_probe.csv",
+      "exists": true,
+      "required": true,
+      "category": "csv"
+    }
+  ],
+  "checkpoints": [
+    {
+      "path": "checkpoints/best.pt",
+      "exists": true,
+      "required": true,
+      "category": "checkpoint"
+    },
+    {
+      "path": "checkpoints/last.pt",
+      "exists": true,
+      "required": true,
+      "category": "checkpoint"
+    }
+  ],
+  "structured_summaries": [
+    {
+      "path": "logs/metric_snapshot.json",
+      "exists": true,
+      "required": true,
+      "category": "structured_summary"
+    },
+    {
+      "path": "logs/benchmark_summary.json",
+      "exists": true,
+      "required": true,
+      "category": "structured_summary"
+    },
+    {
+      "path": "logs/config_snapshot.json",
+      "exists": true,
+      "required": true,
+      "category": "structured_summary"
+    },
+    {
+      "path": "logs/artifact_index.json",
+      "exists": true,
+      "required": true,
+      "category": "structured_summary"
+    }
+  ],
+  "stdout_summaries": [
+    {
+      "path": "logs/training_summary.txt",
+      "exists": true,
+      "required": false,
+      "category": "stdout_summary"
+    }
+  ],
+  "plots": [
+    {
+      "path": "plots/eval_policy_performance.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/eval_reward_breakdown.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/eval_reward_event_summary.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/eval_semantic_summary.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/train_learning_state.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/train_policy_performance.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/train_reward_breakdown.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/train_reward_event_summary.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/train_semantic_summary.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    },
+    {
+      "path": "plots/train_value_learning.png",
+      "exists": true,
+      "required": false,
+      "category": "plots"
+    }
+  ],
+  "trajectories": []
+}

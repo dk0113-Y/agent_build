@@ -1,0 +1,90 @@
+{
+  "schema_version": "2.0",
+  "round_id": "round_0001",
+  "experiment_mode": "formal_train",
+  "source_of_truth_repo": "dk0113-Y/DRL-path-finding",
+  "local_execution_repo_path": "C:\\Users\\Dk\\Desktop\\SCI\\代码1",
+  "decision_status": "pause_for_manual_review",
+  "evaluation_mode": "formal_artifact_review",
+  "comparability_group": "formal_mainline_v1__bf21a9e8fbc5",
+  "baseline_round_id": "round_hist_ref",
+  "baseline_commit_sha": "11f198a74d66f6984eaf0e5742bd2761273a4547",
+  "decision_zone": "manual_review_required",
+  "stop_window_state": {
+    "window_basis": "bootstrap_thresholds",
+    "comparability_status": "bootstrap_comparable",
+    "plateau_detected": false,
+    "hard_stop_triggered": false,
+    "manual_review_required": true,
+    "insufficient_evidence": true,
+    "recommended_action": "pause_for_manual_review",
+    "decision_zone": "manual_review_required",
+    "reasons": [
+      "historical_thresholds_are_bootstrap_only",
+      "net_regression_detected",
+      "comparability_only_bootstrap_confirmed",
+      "runtime_summary_missing",
+      "backfilled_from_historical_run",
+      "train_config_unavailable_in_backfill_context",
+      "timing_summary_unavailable",
+      "total_runtime_unavailable",
+      "complete_train_config_not_recoverable_without_checkpoint_loader",
+      "train_config_unavailable",
+      "bootstrap_thresholds_required",
+      "historical_thresholds_bootstrap_only"
+    ]
+  },
+  "manual_review_reasons": [
+    "comparability_only_bootstrap_confirmed",
+    "runtime_summary_missing"
+  ],
+  "insufficient_evidence_flags": [
+    "backfilled_from_historical_run",
+    "train_config_unavailable_in_backfill_context",
+    "timing_summary_unavailable",
+    "total_runtime_unavailable",
+    "complete_train_config_not_recoverable_without_checkpoint_loader",
+    "train_config_unavailable",
+    "bootstrap_thresholds_required",
+    "historical_thresholds_bootstrap_only"
+  ],
+  "target_program": "train_q_agent.py",
+  "run_args": {
+    "cli_args": [
+      "--device",
+      "cuda"
+    ],
+    "run_name": "sched_turn003_revisit010_entry8_20260411_014043",
+    "output_root": "outputs",
+    "notes": "Imported historical formal run bundle; rerun only after comparability review."
+  },
+  "parameter_changes": [],
+  "codex_analysis_focus": {
+    "compare_targets": [
+      "best_known_reference"
+    ],
+    "required_logs": [
+      "metric_snapshot.json",
+      "benchmark_summary.json",
+      "config_snapshot.json",
+      "artifact_index.json",
+      "comparability_report.json",
+      "round_summary.json"
+    ],
+    "required_plots": [],
+    "questions": [
+      "Is the round formally comparable to the referenced baseline or only bootstrap-comparable?",
+      "Do best_eval, last_eval, and final_probe support improvement, regression, hold, or insufficient evidence?",
+      "Does the stop_window_state justify run_next_round, stop_experiment, pause_for_manual_review, or analyze_only?"
+    ],
+    "expected_output_style": "Write a structured Markdown report grounded in the formal JSON artifacts."
+  },
+  "reference_targets": {
+    "best_known_reference": "outputs/sched_turn005_revisit010_entry8_20260410_234142",
+    "manual_compare_targets": [
+      "outputs/sched_turn007_revisit010_entry8_20260410_214225",
+      "outputs/s5_advtraj10_turn007_entry8_20260410_175445"
+    ]
+  },
+  "controller_notes": "Imported historical four-run formal_train analysis centered on `sched_turn003_revisit010_entry8_20260411_014043`, with `sched_turn005_revisit010_entry8_20260410_234142` as the primary baseline and two additional secondary compare runs."
+}

@@ -1,0 +1,13 @@
+Training Summary
+run_dir: outputs/sched_turn003_revisit010_entry8_20260411_014043
+run_mode: historical_backfill
+total_runtime_sec: None
+total_runtime_hms: None
+recent_train: reward=90.4241714477539 coverage=0.8947749137878418 success_rate=0.47999998927116394 episode_length=486.6300048828125 repeat_visit_ratio=0.31795060634613037
+last_eval: reward=56.10621643066406 coverage=0.8287083506584167 success_rate=0.3333333432674408 episode_length=530.4166870117188 repeat_visit_ratio=0.41566702723503113
+best_eval: reward=102.2117919921875 coverage=0.9238999485969543 success_rate=0.5833333134651184 episode_length=430.25 repeat_visit_ratio=0.3171675503253937
+final_probe: reward=88.30387115478516 coverage=0.8923500180244446 success_rate=0.5625 episode_length=479.75 repeat_visit_ratio=0.32285091280937195
+best_checkpoint_source: checkpoints/best.pt::historical_backfill_success_rate_then_eval_mean_coverage
+best_checkpoint_env_steps: 288000
+last_checkpoint_env_steps: 300000
+final_probe_source: historical_backfill_unknown_best_or_online_last
