@@ -28,9 +28,9 @@ Read these first:
 - `../代码1/README.md`
   - Fast overview of the current mainline and emitted formal artifacts.
 - `../代码1/train_q_agent.py`
-  - Real training entry and run wiring.
+  - Real training entry and run wiring, including `budget_mode`, episode-budget scheduling, fixed train episode seed controls, and optional strict reproducibility runtime guards.
 - `../代码1/training/formal_artifacts.py`
-  - Formal artifact emission contract.
+  - Formal artifact emission contract, including episode-budget metadata and observed run contract fields.
 - `../代码1/training/checkpointing.py`
   - `best.pt` / `last.pt` behavior and checkpoint rules.
 - `../代码1/tools/backfill_formal_run_artifacts.py`
@@ -187,7 +187,7 @@ Read:
 - `comparability.py`
 - `build_exchange_bundle.py`
 
-Goal: confirm local run artifacts, checkpoint rules, and bundle expectations match.
+Goal: confirm local run artifacts, checkpoint rules, episode-budget metadata, and bundle expectations match.
 
 ### Docs-Implementation Drift Check
 
