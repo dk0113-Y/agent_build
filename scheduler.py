@@ -341,10 +341,17 @@ def wait_for_process_exit(process: subprocess.Popen[bytes], poll_sec: float, run
             return start_time, ""
         latest = start_time
         updated_file = ""
-        for relative_path in [
-            "logs/train_steps.csv", "logs/train_episodes.csv", "logs/eval_metrics.csv", "logs/final_probe.csv",
-            "checkpoints/best.pt", "checkpoints/last.pt"
-        ]:
+        active_formal_paths = [
+            "logs/train_steps.csv",
+            "logs/train_episodes.csv",
+            "logs/final_probe.csv",
+            "checkpoints/last.pt",
+        ]
+        legacy_diagnostic_paths = [
+            "logs/eval_metrics.csv",
+            "checkpoints/best.pt",
+        ]
+        for relative_path in [*active_formal_paths, *legacy_diagnostic_paths]:
             p = run_dir / relative_path
             if p.exists():
                 mtime = p.stat().st_mtime

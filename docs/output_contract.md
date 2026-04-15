@@ -2,6 +2,8 @@
 
 ## Formal Round Inputs
 
+Current formal protocol revision: `formal_last_checkpoint_v2_1`.
+
 For `formal_train`, the controller expects these required artifacts:
 - `logs/train_steps.csv`
 - `logs/train_episodes.csv`
@@ -28,7 +30,7 @@ New formal rounds should expose:
 - `train_final_consistency_summary`
 - `recent_train_support_summary`
 
-`best_eval` and `last_eval` may exist for historical compatibility, but they are diagnostic-only.
+`best_eval` and `last_eval` may exist for historical compatibility, but v2.1 rounds should omit them unless a legacy diagnostic artifact is actually present.
 
 ## Round Summary Expectations
 

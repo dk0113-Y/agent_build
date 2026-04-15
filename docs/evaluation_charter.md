@@ -2,7 +2,7 @@
 
 ## Formal Acceptance Object
 
-Current formal protocol: `formal_last_checkpoint_v2`.
+Current formal protocol: `formal_last_checkpoint_v2_1`.
 
 Formal acceptance object:
 - `checkpoints/last.pt`
@@ -47,7 +47,7 @@ These artifacts are diagnostic-only under the current protocol and are not part 
 
 ## Comparability
 
-Formal comparability for `formal_last_checkpoint_v2` is gated by:
+Formal comparability for `formal_last_checkpoint_v2_1` is gated by:
 - `evaluation_contract.protocol_revision`
 - `comparability_group`
 - `train_steps_header`
@@ -55,4 +55,4 @@ Formal comparability for `formal_last_checkpoint_v2` is gated by:
 - `final_env_steps`
 - full `config_snapshot`
 
-`same_eval_metrics_header` is diagnostic-only in v2 and must not decide formal comparability.
+`same_eval_metrics_header` is diagnostic-only in the last-checkpoint formal protocol family and must not decide v2.1 formal comparability.

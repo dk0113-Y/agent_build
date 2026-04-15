@@ -718,6 +718,25 @@ def build_round_summary(
     }
 
 
+def _has_legacy_diagnostic_context(
+    *,
+    comparability_report: dict[str, Any],
+    metric_snapshot: dict[str, Any],
+) -> bool:
+    current_protocol = str(comparability_report.get("formal_protocol_id") or "").strip()
+    if current_protocol != "formal_last_checkpoint_v2_1":
+        return bool(metric_snapshot.get("legacy_diagnostic_context")) or bool(metric_snapshot.get("last_eval")) or bool(metric_snapshot.get("best_eval"))
+    legacy_context = metric_snapshot.get("legacy_diagnostic_context", {})
+    if not isinstance(legacy_context, dict):
+        legacy_context = {}
+    return bool(
+        legacy_context.get("periodic_eval_available")
+        or legacy_context.get("best_checkpoint_exists")
+        or metric_snapshot.get("last_eval")
+        or metric_snapshot.get("best_eval")
+    )
+
+
 def render_codex_report(
     *,
     round_summary: dict[str, Any],
@@ -732,6 +751,10 @@ def render_codex_report(
     training_dynamics = round_summary.get("training_dynamics_summary", {})
     train_final_consistency = round_summary.get("train_final_consistency_summary", {})
     legacy_context = metric_snapshot.get("legacy_diagnostic_context", {})
+    render_legacy_block = _has_legacy_diagnostic_context(
+        comparability_report=comparability_report,
+        metric_snapshot=metric_snapshot,
+    )
     lines = [
         "# Codex Report",
         "",
@@ -781,20 +804,35 @@ def render_codex_report(
         f"- Notes: `{train_final_consistency.get('notes', [])}`",
         f"- Details: `{train_final_consistency.get('details', {})}`",
         "",
-        "## 7. Optional Legacy Diagnostic Context",
-        f"- periodic_eval_available: `{legacy_context.get('periodic_eval_available')}`",
-        f"- last_eval_diagnostic: `{metric_snapshot.get('last_eval', {}).get('metrics', {})}`",
-        f"- best_eval_diagnostic: `{metric_snapshot.get('best_eval', {}).get('metrics', {})}`",
-        f"- best_checkpoint_exists: `{legacy_context.get('best_checkpoint_exists')}`",
-        "",
-        "## 8. Efficiency",
+    ]
+    if render_legacy_block:
+        lines.extend(
+            [
+                "## 7. Optional Legacy Diagnostic Context",
+                f"- periodic_eval_available: `{legacy_context.get('periodic_eval_available')}`",
+                f"- last_eval_diagnostic: `{metric_snapshot.get('last_eval', {}).get('metrics', {})}`",
+                f"- best_eval_diagnostic: `{metric_snapshot.get('best_eval', {}).get('metrics', {})}`",
+                f"- best_checkpoint_exists: `{legacy_context.get('best_checkpoint_exists')}`",
+                "",
+                "## 8. Efficiency",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "## 7. Efficiency",
+            ]
+        )
+    lines.extend(
+        [
         f"- total_runtime_sec: `{benchmark_summary.get('total_runtime_sec')}`",
         f"- diagnostic_env_steps_to_best: `{benchmark_summary.get('diagnostic_env_steps_to_best', benchmark_summary.get('env_steps_to_best'))}`",
         "",
-        "## 9. Recommendation",
+        "## 9. Recommendation" if render_legacy_block else "## 8. Recommendation",
         f"- Recommended next step: `{round_summary['stop_window_state']['recommended_action']}`",
         f"- Confidence / caveat: `comparability={comparability_report.get('comparability_status')}; bootstrap_thresholds={'historical_thresholds_bootstrap_only' in round_summary['insufficient_evidence_flags']}`",
-    ]
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -814,8 +852,11 @@ def render_formal_gpt_input(
     consistency_summary = round_summary.get("train_final_consistency_summary", {})
     final_probe_metrics = metric_snapshot.get("final_probe", {}).get("metrics", {})
     legacy_context = metric_snapshot.get("legacy_diagnostic_context", {})
-    return "\n".join(
-        [
+    render_legacy_block = _has_legacy_diagnostic_context(
+        comparability_report=comparability_report,
+        metric_snapshot=metric_snapshot,
+    )
+    lines = [
             "# GPT Input Package",
             "",
             "## 1. Current Round Basics",
@@ -852,30 +893,45 @@ def render_formal_gpt_input(
             f"- recent_train_support_summary: `{round_summary.get('recent_train_support_summary', {})}`",
             f"- train_final_consistency_summary: `{consistency_summary}`",
             "",
-            "## 6. Optional Legacy Diagnostic Context",
-            f"- periodic_eval_available: `{legacy_context.get('periodic_eval_available')}`",
-            f"- last_eval_diagnostic: `{metric_snapshot.get('last_eval', {}).get('metrics', {})}`",
-            f"- best_eval_diagnostic: `{metric_snapshot.get('best_eval', {}).get('metrics', {})}`",
-            f"- benchmark_summary: `runtime={benchmark_summary.get('total_runtime_sec')}, diagnostic_env_steps_to_best={benchmark_summary.get('diagnostic_env_steps_to_best', benchmark_summary.get('env_steps_to_best'))}`",
-            "",
-            "## 7. Stop Window",
+        ]
+    if render_legacy_block:
+        lines.extend(
+            [
+                "## 6. Optional Legacy Diagnostic Context",
+                f"- periodic_eval_available: `{legacy_context.get('periodic_eval_available')}`",
+                f"- last_eval_diagnostic: `{metric_snapshot.get('last_eval', {}).get('metrics', {})}`",
+                f"- best_eval_diagnostic: `{metric_snapshot.get('best_eval', {}).get('metrics', {})}`",
+                f"- benchmark_summary: `runtime={benchmark_summary.get('total_runtime_sec')}, diagnostic_env_steps_to_best={benchmark_summary.get('diagnostic_env_steps_to_best', benchmark_summary.get('env_steps_to_best'))}`",
+                "",
+                "## 7. Stop Window",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                "## 6. Stop Window",
+            ]
+        )
+    lines.extend(
+        [
             f"- decision_zone: `{round_summary['decision_zone']}`",
             f"- recommended_action: `{stop_window_state['recommended_action']}`",
             f"- plateau_detected: `{stop_window_state['plateau_detected']}`",
             f"- manual_review_required: `{stop_window_state['manual_review_required']}`",
             f"- reasons: {', '.join(stop_window_state['reasons']) or 'NONE'}",
             "",
-            "## 8. Manual Review / Evidence Gaps",
+            "## 8. Manual Review / Evidence Gaps" if render_legacy_block else "## 7. Manual Review / Evidence Gaps",
             f"- manual_review_reasons: {', '.join(round_summary['manual_review_reasons']) or 'NONE'}",
             f"- insufficient_evidence_flags: {', '.join(round_summary['insufficient_evidence_flags']) or 'NONE'}",
             f"- historical_baseline_summary: `path={round_summary.get('historical_baseline_summary_path') or 'UNSET'}, run_count_total={(historical_baseline_summary or {}).get('run_count_total')}, insufficient_history_for_calibration={(historical_baseline_summary or {}).get('insufficient_history_for_calibration')}`",
             "",
-            "## 9. What GPT Should Output",
+            "## 9. What GPT Should Output" if render_legacy_block else "## 8. What GPT Should Output",
             "- Read `docs/evaluation_charter.md` and `docs/output_contract.md` before drafting the next decision.",
             "- Any claim of improvement must remain subordinate to comparability. If comparability failed or evidence is insufficient, do not accumulate a positive formal conclusion.",
             "- Output a single `next_gpt_decision.json` payload aligned with `docs/output_contract.md` and the dual-mode protocol schema.",
         ]
-    ) + "\n"
+    )
+    return "\n".join(lines) + "\n"
 
 
 def load_formal_bundle(round_dir: Path) -> dict[str, Any]:

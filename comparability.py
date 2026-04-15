@@ -10,6 +10,8 @@ from typing import Any
 
 
 PROTOCOL_SCHEMA_VERSION = "formal_exchange/v2"
+CURRENT_FORMAL_PROTOCOL_REVISION = "formal_last_checkpoint_v2_1"
+LAST_CHECKPOINT_PROTOCOLS = {"formal_last_checkpoint_v2", CURRENT_FORMAL_PROTOCOL_REVISION}
 PRIMARY_METRICS = ("success_rate", "coverage", "reward")
 SECONDARY_METRICS = ("episode_length", "repeat_visit_ratio")
 STABILITY_METRICS = (
@@ -373,7 +375,7 @@ def build_comparability_report(
     elif not checks["same_comparability_group"]:
         status = "not_comparable"
         notes.append("Target and baseline belong to different comparability groups.")
-    elif target_protocol == "formal_last_checkpoint_v2" and (
+    elif target_protocol in LAST_CHECKPOINT_PROTOCOLS and (
         not checks["same_train_steps_header"]
         or not checks["same_final_probe_header"]
     ):
@@ -413,7 +415,7 @@ def build_comparability_report(
         checks["same_eval_metrics_header"] is False
         and target_eval_header
         and baseline_eval_header
-        and target_protocol == "formal_last_checkpoint_v2"
+        and target_protocol in LAST_CHECKPOINT_PROTOCOLS
     ):
         notes.append("Diagnostic periodic eval CSV headers differ, but they are not part of the formal gate.")
     if historical_baseline_summary and historical_baseline_summary.get("insufficient_history_for_calibration"):
