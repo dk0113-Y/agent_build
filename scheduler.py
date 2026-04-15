@@ -50,14 +50,15 @@ FORMAL_EXPECTED_SUBDIRS = ("checkpoints", "logs")
 FORMAL_EXPECTED_LOG_FILES = (
     "train_steps.csv",
     "train_episodes.csv",
-    "eval_metrics.csv",
     "final_probe.csv",
     "metric_snapshot.json",
     "benchmark_summary.json",
     "config_snapshot.json",
     "artifact_index.json",
 )
-EXPECTED_CHECKPOINT_FILES = ("best.pt", "last.pt")
+FORMAL_OPTIONAL_LOG_FILES = ("eval_metrics.csv",)
+FORMAL_EXPECTED_CHECKPOINT_FILES = ("last.pt",)
+REHEARSAL_EXPECTED_CHECKPOINT_FILES = ("best.pt", "last.pt")
 
 
 @dataclass
@@ -403,10 +404,12 @@ def validate_run_artifacts(run_dir: Path, target_program: str) -> ValidationResu
     if target_program == "train_q_agent.py":
         expected_subdirs = FORMAL_EXPECTED_SUBDIRS
         expected_logs = FORMAL_EXPECTED_LOG_FILES
+        expected_checkpoints = FORMAL_EXPECTED_CHECKPOINT_FILES
         expected_plots: tuple[str, ...] = ()
     else:
         expected_subdirs = REHEARSAL_EXPECTED_SUBDIRS
         expected_logs = REHEARSAL_EXPECTED_LOG_FILES
+        expected_checkpoints = REHEARSAL_EXPECTED_CHECKPOINT_FILES
         expected_plots = REHEARSAL_EXPECTED_PLOT_FILES
 
     for subdir_name in expected_subdirs:
@@ -427,7 +430,7 @@ def validate_run_artifacts(run_dir: Path, target_program: str) -> ValidationResu
 
     checkpoints_dir = run_dir / "checkpoints"
     if checkpoints_dir.exists():
-        for filename in EXPECTED_CHECKPOINT_FILES:
+        for filename in expected_checkpoints:
             validate_non_empty_file(checkpoints_dir / filename, missing_items, f"checkpoints/{filename}")
 
     return ValidationResult(success=not missing_items, missing_items=missing_items)
