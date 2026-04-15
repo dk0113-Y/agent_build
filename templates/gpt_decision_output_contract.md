@@ -40,7 +40,6 @@ DECISION_JSON_BEGIN
     "required_logs": [
       "logs/train_steps.csv",
       "logs/train_episodes.csv",
-      "logs/eval_metrics.csv",
       "logs/final_probe.csv",
       "logs/metric_snapshot.json",
       "logs/benchmark_summary.json",
@@ -50,7 +49,7 @@ DECISION_JSON_BEGIN
     "required_plots": [],
     "questions": [
       "Is the next round formally comparable?",
-      "What do best_eval, last_eval, and final_probe jointly imply?",
+      "What do final_probe, training_dynamics_summary, and train_final_consistency_summary imply?",
       "Should the controller run, stop, pause, or analyze only?"
     ],
     "expected_output_style": "Write a structured markdown report grounded in the formal JSON artifacts."

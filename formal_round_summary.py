@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from comparability import PRIMARY_METRICS, SECONDARY_METRICS, STABILITY_METRICS, is_formally_comparable
+from comparability import PRIMARY_METRICS, SECONDARY_METRICS, STABILITY_METRICS
 
 
 PROTOCOL_SCHEMA_VERSION = "formal_exchange/v2"
@@ -25,7 +25,7 @@ STABILITY_TOLERANCES = {
     "timeout_flag": 0.15,
     "stall_trigger_count": 25.0,
     "zero_info_step_count": 25.0,
-    "recent_revisit_count": 15.0,
+    "recent_revisit_trigger_count": 15.0,
 }
 EFFICIENCY_TOLERANCES = {
     "diagnostic_env_steps_to_best": 20_000.0,
@@ -44,6 +44,40 @@ RECENT_TRAIN_SUPPORT_DIRECTIONS = {
     "reward": True,
     "episode_length": False,
     "repeat_visit_ratio": False,
+}
+TRAINING_DYNAMICS_TOLERANCES = {
+    "recent_mean_reward": 20.0,
+    "recent_mean_coverage": 0.05,
+    "recent_success_rate": 0.10,
+    "recent_mean_episode_length": 50.0,
+    "recent_mean_repeat_visit_ratio": 0.08,
+    "growth_rate_reward": 1.0,
+    "growth_rate_coverage": 0.002,
+    "growth_rate_success_rate": 0.002,
+    "growth_rate_repeat_visit_ratio": 0.002,
+    "threshold_reach_steps_success_050": 10_000.0,
+    "threshold_reach_steps_coverage_090": 10_000.0,
+    "late_stage_variance_reward": 20.0,
+    "late_stage_variance_coverage": 0.005,
+    "late_stage_variance_success_rate": 0.005,
+    "late_stage_variance_repeat_visit_ratio": 0.005,
+}
+TRAINING_DYNAMICS_DIRECTIONS = {
+    "recent_mean_reward": True,
+    "recent_mean_coverage": True,
+    "recent_success_rate": True,
+    "recent_mean_episode_length": False,
+    "recent_mean_repeat_visit_ratio": False,
+    "growth_rate_reward": True,
+    "growth_rate_coverage": True,
+    "growth_rate_success_rate": True,
+    "growth_rate_repeat_visit_ratio": False,
+    "threshold_reach_steps_success_050": False,
+    "threshold_reach_steps_coverage_090": False,
+    "late_stage_variance_reward": False,
+    "late_stage_variance_coverage": False,
+    "late_stage_variance_success_rate": False,
+    "late_stage_variance_repeat_visit_ratio": False,
 }
 
 
@@ -103,6 +137,8 @@ def stability_value(metric_snapshot: dict[str, Any], block_name: str, metric_nam
     if not isinstance(reward_events, dict):
         return None
     value = reward_events.get(metric_name)
+    if value is None and metric_name == "recent_revisit_trigger_count":
+        value = reward_events.get("recent_revisit_count")
     return float(value) if isinstance(value, (int, float)) else None
 
 
@@ -161,11 +197,7 @@ def summarize_metric_family(
         details[metric_name] = {
             "target": target,
             "baseline": baseline,
-            "delta": (
-                target - baseline
-                if target is not None and baseline is not None
-                else None
-            ),
+            "delta": target - baseline if target is not None and baseline is not None else None,
             "verdict": verdict,
         }
 
@@ -178,6 +210,52 @@ def summarize_metric_family(
     else:
         family_verdict = "hold"
     return {"verdict": family_verdict, "details": details, "counts": counts}
+
+
+def _nested_value(payload: dict[str, Any] | None, *keys: str) -> float | None:
+    current: Any = payload or {}
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return float(current) if isinstance(current, (int, float)) else None
+
+
+def _compare_flat_metrics(
+    *,
+    target_values: dict[str, Any] | None,
+    baseline_values: dict[str, Any] | None,
+    metric_names: tuple[str, ...],
+    tolerances: dict[str, float],
+    higher_is_better_map: dict[str, bool],
+) -> dict[str, Any]:
+    details: dict[str, Any] = {}
+    counts = {"improved": 0, "regressed": 0, "hold": 0, "insufficient_evidence": 0}
+    for metric_name in metric_names:
+        target = _nested_value(target_values, metric_name)
+        baseline = _nested_value(baseline_values, metric_name)
+        verdict = classify_delta(
+            target=target,
+            baseline=baseline,
+            tolerance=tolerances[metric_name],
+            higher_is_better=higher_is_better_map[metric_name],
+        )
+        counts[verdict] += 1
+        details[metric_name] = {
+            "target": target,
+            "baseline": baseline,
+            "delta": target - baseline if target is not None and baseline is not None else None,
+            "verdict": verdict,
+        }
+    if counts["insufficient_evidence"] == len(metric_names):
+        verdict = "insufficient_evidence"
+    elif counts["regressed"] >= max(1, len(metric_names) // 2):
+        verdict = "regression"
+    elif counts["improved"] >= max(1, len(metric_names) // 2) and counts["regressed"] == 0:
+        verdict = "improvement"
+    else:
+        verdict = "hold"
+    return {"verdict": verdict, "details": details, "counts": counts}
 
 
 def build_efficiency_summary(
@@ -206,11 +284,7 @@ def build_efficiency_summary(
         details[metric_name] = {
             "target": target_value,
             "baseline": baseline_value,
-            "delta": (
-                target_value - baseline_value
-                if target_value is not None and baseline_value is not None
-                else None
-            ),
+            "delta": target_value - baseline_value if target_value is not None and baseline_value is not None else None,
             "verdict": verdict,
         }
     if counts["insufficient_evidence"] == len(EFFICIENCY_TOLERANCES):
@@ -234,20 +308,12 @@ def semantic_monitoring_notes(
         return notes
     target_cap = semantic_value(target_metric_snapshot, "final_probe", "value_entry_cap_hit_flag")
     baseline_cap = semantic_value(baseline_metric_snapshot, "final_probe", "value_entry_cap_hit_flag")
-    if (
-        target_cap is not None
-        and baseline_cap is not None
-        and target_cap - baseline_cap > 0.03
-    ):
+    if target_cap is not None and baseline_cap is not None and target_cap - baseline_cap > 0.03:
         notes.append("value_entry_cap_hit_flag increased materially in final_probe.")
 
     target_trunc = semantic_value(target_metric_snapshot, "final_probe", "value_truncated_entry_count")
     baseline_trunc = semantic_value(baseline_metric_snapshot, "final_probe", "value_truncated_entry_count")
-    if (
-        target_trunc is not None
-        and baseline_trunc is not None
-        and target_trunc - baseline_trunc > 0.05
-    ):
+    if target_trunc is not None and baseline_trunc is not None and target_trunc - baseline_trunc > 0.05:
         notes.append("value_truncated_entry_count increased materially in final_probe.")
 
     target_local_frontier = semantic_value(target_metric_snapshot, "final_probe", "local_frontier_coverage")
@@ -262,6 +328,10 @@ def semantic_monitoring_notes(
 
 
 def build_recent_train_support_summary(metric_snapshot: dict[str, Any]) -> dict[str, Any]:
+    existing = metric_snapshot.get("recent_train_support_summary")
+    if isinstance(existing, dict) and existing.get("verdict"):
+        return existing
+
     details: dict[str, Any] = {}
     counts = {
         "aligned": 0,
@@ -300,33 +370,128 @@ def build_recent_train_support_summary(metric_snapshot: dict[str, Any]) -> dict[
         verdict = "insufficient_evidence"
     elif counts["final_probe_weaker"] >= 2:
         verdict = "diverges_from_final_probe"
-    elif counts["aligned"] >= 3 and counts["final_probe_weaker"] == 0:
+    elif counts["final_probe_weaker"] == 0 and (counts["aligned"] + counts["final_probe_stronger"]) >= 4:
         verdict = "supports_final_probe"
-    elif counts["final_probe_weaker"] == 0:
-        verdict = "consistent_or_stronger"
     else:
         verdict = "mixed"
+
     notes: list[str] = []
     weaker_metrics = [name for name, payload in details.items() if payload["verdict"] == "final_probe_weaker"]
     stronger_metrics = [name for name, payload in details.items() if payload["verdict"] == "final_probe_stronger"]
     if verdict == "supports_final_probe":
         notes.append("recent_train broadly supports the held-out final_probe direction.")
     elif verdict == "diverges_from_final_probe":
-        notes.append(
-            "recent_train is materially stronger than the held-out final_probe on several metrics; "
-            "training-side screening does not support formal acceptance."
-        )
-    elif verdict == "consistent_or_stronger":
-        notes.append("final_probe is at least as strong as recent_train on most tracked support metrics.")
+        notes.append("recent_train is materially stronger than the held-out final_probe on several metrics.")
     elif verdict == "mixed":
         notes.append("recent_train and final_probe provide mixed support signals across tracked metrics.")
-    elif verdict == "insufficient_evidence":
-        notes.append("recent_train_support_summary is incomplete because one or more support metrics are unavailable.")
+    else:
+        notes.append("recent_train support is incomplete because one or more support metrics are unavailable.")
     if weaker_metrics:
         notes.append(f"Metrics where final_probe underperformed recent_train: {', '.join(sorted(weaker_metrics))}.")
     if stronger_metrics:
         notes.append(f"Metrics where final_probe outperformed recent_train: {', '.join(sorted(stronger_metrics))}.")
     return {"verdict": verdict, "details": details, "counts": counts, "notes": notes}
+
+
+def build_training_dynamics_quality_summary(
+    *,
+    target_metric_snapshot: dict[str, Any],
+    baseline_metric_snapshot: dict[str, Any] | None,
+) -> dict[str, Any]:
+    target_summary = target_metric_snapshot.get("training_dynamics_summary", {})
+    baseline_summary = (baseline_metric_snapshot or {}).get("training_dynamics_summary", {})
+    target_final_window = target_summary.get("final_window_stats", {})
+    baseline_final_window = baseline_summary.get("final_window_stats", {})
+    target_growth = target_summary.get("growth_rates", {})
+    baseline_growth = baseline_summary.get("growth_rates", {})
+    target_thresholds = target_summary.get("threshold_reach_steps", {})
+    baseline_thresholds = baseline_summary.get("threshold_reach_steps", {})
+    target_variance = target_summary.get("late_stage_variance", {})
+    baseline_variance = baseline_summary.get("late_stage_variance", {})
+
+    final_window_summary = _compare_flat_metrics(
+        target_values=target_final_window,
+        baseline_values=baseline_final_window,
+        metric_names=(
+            "recent_mean_reward",
+            "recent_mean_coverage",
+            "recent_success_rate",
+            "recent_mean_episode_length",
+            "recent_mean_repeat_visit_ratio",
+        ),
+        tolerances=TRAINING_DYNAMICS_TOLERANCES,
+        higher_is_better_map=TRAINING_DYNAMICS_DIRECTIONS,
+    )
+    growth_rate_summary = _compare_flat_metrics(
+        target_values=target_growth,
+        baseline_values=baseline_growth,
+        metric_names=(
+            "growth_rate_reward",
+            "growth_rate_coverage",
+            "growth_rate_success_rate",
+            "growth_rate_repeat_visit_ratio",
+        ),
+        tolerances=TRAINING_DYNAMICS_TOLERANCES,
+        higher_is_better_map=TRAINING_DYNAMICS_DIRECTIONS,
+    )
+    threshold_reach_summary = _compare_flat_metrics(
+        target_values=target_thresholds,
+        baseline_values=baseline_thresholds,
+        metric_names=(
+            "threshold_reach_steps_success_050",
+            "threshold_reach_steps_coverage_090",
+        ),
+        tolerances=TRAINING_DYNAMICS_TOLERANCES,
+        higher_is_better_map=TRAINING_DYNAMICS_DIRECTIONS,
+    )
+    late_stage_variance_summary = _compare_flat_metrics(
+        target_values=target_variance,
+        baseline_values=baseline_variance,
+        metric_names=(
+            "late_stage_variance_reward",
+            "late_stage_variance_coverage",
+            "late_stage_variance_success_rate",
+            "late_stage_variance_repeat_visit_ratio",
+        ),
+        tolerances=TRAINING_DYNAMICS_TOLERANCES,
+        higher_is_better_map=TRAINING_DYNAMICS_DIRECTIONS,
+    )
+
+    sub_verdicts = [
+        final_window_summary["verdict"],
+        growth_rate_summary["verdict"],
+        threshold_reach_summary["verdict"],
+        late_stage_variance_summary["verdict"],
+    ]
+    if all(verdict == "insufficient_evidence" for verdict in sub_verdicts):
+        verdict = "insufficient_evidence"
+    elif sub_verdicts.count("regression") >= 2:
+        verdict = "regression"
+    elif sub_verdicts.count("improvement") >= 2 and "regression" not in sub_verdicts:
+        verdict = "improvement"
+    else:
+        verdict = "hold"
+
+    notes: list[str] = []
+    if verdict == "improvement":
+        notes.append("training_dynamics improved across multiple ranking dimensions.")
+    elif verdict == "regression":
+        notes.append("training_dynamics regressed on multiple ranking dimensions.")
+    elif verdict == "hold":
+        notes.append("training_dynamics is mixed or approximately flat versus baseline.")
+    else:
+        notes.append("training_dynamics is unavailable or missing on one or both sides.")
+
+    return {
+        "verdict": verdict,
+        "final_window_summary": final_window_summary,
+        "growth_rate_summary": growth_rate_summary,
+        "threshold_reach_summary": threshold_reach_summary,
+        "late_stage_variance_summary": late_stage_variance_summary,
+        "target": target_summary,
+        "baseline": baseline_summary if baseline_summary else None,
+        "notes": notes,
+    }
 
 
 def build_stop_window_state(
@@ -413,11 +578,7 @@ def build_round_summary(
         block_name="final_probe",
         metric_names=PRIMARY_METRICS,
         tolerances=PRIMARY_TOLERANCES,
-        higher_is_better_map={
-            "success_rate": True,
-            "coverage": True,
-            "reward": True,
-        },
+        higher_is_better_map={"success_rate": True, "coverage": True, "reward": True},
         value_getter=metric_value,
     )
     secondary = summarize_metric_family(
@@ -426,10 +587,7 @@ def build_round_summary(
         block_name="final_probe",
         metric_names=SECONDARY_METRICS,
         tolerances=SECONDARY_TOLERANCES,
-        higher_is_better_map={
-            "episode_length": False,
-            "repeat_visit_ratio": False,
-        },
+        higher_is_better_map={"episode_length": False, "repeat_visit_ratio": False},
         value_getter=metric_value,
     )
     stability = summarize_metric_family(
@@ -442,7 +600,7 @@ def build_round_summary(
             "timeout_flag": False,
             "stall_trigger_count": False,
             "zero_info_step_count": False,
-            "recent_revisit_count": False,
+            "recent_revisit_trigger_count": False,
         },
         value_getter=stability_value,
     )
@@ -451,6 +609,11 @@ def build_round_summary(
         baseline_benchmark_summary=baseline_benchmark_summary,
     )
     recent_train_support = build_recent_train_support_summary(metric_snapshot)
+    consistency_summary = metric_snapshot.get("train_final_consistency_summary", recent_train_support)
+    training_dynamics_summary = build_training_dynamics_quality_summary(
+        target_metric_snapshot=metric_snapshot,
+        baseline_metric_snapshot=baseline_metric_snapshot,
+    )
 
     insufficient_evidence_flags = merge_insufficient_flags(
         metric_snapshot,
@@ -469,21 +632,14 @@ def build_round_summary(
         target_metric_snapshot=metric_snapshot,
         baseline_metric_snapshot=baseline_metric_snapshot,
     )
-    if recent_train_support["verdict"] == "diverges_from_final_probe":
-        manual_review_reasons = collect_unique_flags(
-            manual_review_reasons,
-            ["recent_train_final_probe_divergence"],
-        )
+    if recent_train_support.get("verdict") == "diverges_from_final_probe":
+        manual_review_reasons = collect_unique_flags(manual_review_reasons, ["recent_train_final_probe_divergence"])
+    if training_dynamics_summary.get("verdict") == "regression" and primary["verdict"] == "improvement":
+        manual_review_reasons = collect_unique_flags(manual_review_reasons, ["training_dynamics_regressed_despite_final_probe_gain"])
     if comparability_report.get("comparability_status") == "bootstrap_comparable":
-        manual_review_reasons = collect_unique_flags(
-            manual_review_reasons,
-            ["comparability_only_bootstrap_confirmed"],
-        )
+        manual_review_reasons = collect_unique_flags(manual_review_reasons, ["comparability_only_bootstrap_confirmed"])
     if benchmark_summary.get("total_runtime_sec") is None:
-        manual_review_reasons = collect_unique_flags(
-            manual_review_reasons,
-            ["runtime_summary_missing"],
-        )
+        manual_review_reasons = collect_unique_flags(manual_review_reasons, ["runtime_summary_missing"])
 
     overall = "hold"
     if comparability_report.get("comparability_status") == "not_comparable":
@@ -502,6 +658,8 @@ def build_round_summary(
         "secondary_metric_verdict": secondary["verdict"],
         "stability_verdict": stability["verdict"],
         "efficiency_verdict": efficiency["verdict"],
+        "training_dynamics_verdict": training_dynamics_summary["verdict"],
+        "train_final_consistency_verdict": consistency_summary.get("verdict"),
         "overall_round_verdict": overall,
     }
     stop_window_state = build_stop_window_state(
@@ -513,9 +671,9 @@ def build_round_summary(
     )
 
     notes = [
-        "Formal round verdicts are gated by comparability before any improvement claim is considered valid.",
-        "Formal acceptance is based on final_probe over the final last-network object; recent_train is supporting screening evidence only.",
-        "Periodic eval and best-checkpoint artifacts are diagnostic-only when present and are never required for formal promotion.",
+        "Formal judgement is based on final_probe of the last checkpoint under the held-out suite.",
+        "recent_train and training_dynamics_summary are screening and ranking support signals only.",
+        "periodic eval and best checkpoint artifacts are legacy diagnostic-only context when they are present.",
         "Current thresholds are bootstrap-only whenever historical_baseline_summary.json reports insufficient calibration history.",
     ]
 
@@ -531,14 +689,10 @@ def build_round_summary(
         "run_dir": run_dir,
         "baseline_round_id": baseline_round_id,
         "baseline_commit_sha": baseline_commit_sha,
-        "historical_baseline_summary_path": (
-            "historical_baseline_summary.json" if historical_baseline_summary is not None else None
-        ),
+        "historical_baseline_summary_path": "historical_baseline_summary.json" if historical_baseline_summary is not None else None,
         "historical_calibration": {
             "available": historical_baseline_summary is not None,
-            "insufficient_history_for_calibration": bool(
-                (historical_baseline_summary or {}).get("insufficient_history_for_calibration")
-            ),
+            "insufficient_history_for_calibration": bool((historical_baseline_summary or {}).get("insufficient_history_for_calibration")),
             "run_count_total": (historical_baseline_summary or {}).get("run_count_total"),
         },
         "comparability_group": config_snapshot.get("comparability", {}).get("comparability_group"),
@@ -547,11 +701,18 @@ def build_round_summary(
         "manual_review_reasons": manual_review_reasons,
         "insufficient_evidence_flags": insufficient_evidence_flags,
         "verdicts": verdicts,
-        "recent_train_support_summary": recent_train_support,
+        "final_probe_formal_summary": {
+            "primary_metric_summary": primary,
+            "secondary_metric_summary": secondary,
+            "stability_summary": stability,
+        },
         "primary_metric_summary": primary,
         "secondary_metric_summary": secondary,
         "stability_summary": stability,
         "efficiency_summary": efficiency,
+        "recent_train_support_summary": recent_train_support,
+        "train_final_consistency_summary": consistency_summary,
+        "training_dynamics_summary": training_dynamics_summary,
         "comparability_status": comparability_report.get("comparability_status"),
         "notes": notes,
     }
@@ -565,12 +726,12 @@ def render_codex_report(
     benchmark_summary: dict[str, Any],
 ) -> str:
     verdicts = round_summary["verdicts"]
-    recent_train_support = round_summary.get("recent_train_support_summary", {})
-    recent_train = metric_snapshot.get("recent_train", {})
-    recent_train_metrics = recent_train.get("metrics", {})
     final_probe = metric_snapshot.get("final_probe", {})
     final_probe_metrics = final_probe.get("metrics", {})
     final_probe_reward_events = final_probe.get("reward_events", {})
+    training_dynamics = round_summary.get("training_dynamics_summary", {})
+    train_final_consistency = round_summary.get("train_final_consistency_summary", {})
+    legacy_context = metric_snapshot.get("legacy_diagnostic_context", {})
     lines = [
         "# Codex Report",
         "",
@@ -590,42 +751,41 @@ def render_codex_report(
         f"- Stop action: `{round_summary['stop_window_state']['recommended_action']}`",
         f"- Manual review reasons: {', '.join(round_summary['manual_review_reasons']) or 'NONE'}",
         f"- Insufficient evidence flags: {', '.join(round_summary['insufficient_evidence_flags']) or 'NONE'}",
-        f"- Historical calibration: `available={round_summary['historical_calibration']['available']}, insufficient_history_for_calibration={round_summary['historical_calibration']['insufficient_history_for_calibration']}`",
         "",
-        "## 3. Verdicts",
+        "## 3. Formal Verdicts",
         f"- Primary verdict: `{verdicts['primary_metric_verdict']}`",
         f"- Secondary verdict: `{verdicts['secondary_metric_verdict']}`",
         f"- Stability verdict: `{verdicts['stability_verdict']}`",
-        f"- Efficiency verdict: `{verdicts['efficiency_verdict']}`",
+        f"- Training dynamics verdict: `{verdicts['training_dynamics_verdict']}`",
+        f"- Train-final consistency verdict: `{verdicts['train_final_consistency_verdict']}`",
         f"- Overall verdict: `{verdicts['overall_round_verdict']}`",
         "",
-        "## 4. Recent Train Screening",
-        f"- Support verdict: `{recent_train_support.get('verdict', 'UNSET')}`",
-        f"- Notes: `{recent_train_support.get('notes', [])}`",
-        f"- Reward: `{recent_train_metrics.get('reward')}`",
-        f"- Coverage: `{recent_train_metrics.get('coverage')}`",
-        f"- Success rate: `{recent_train_metrics.get('success_rate')}`",
-        f"- Episode length: `{recent_train_metrics.get('episode_length')}`",
-        f"- Repeat visit ratio: `{recent_train_metrics.get('repeat_visit_ratio')}`",
-        "",
-        "## 5. Final Probe (Formal Acceptance Object)",
+        "## 4. Final Probe (Formal Acceptance Object)",
         f"- Source: `{metric_snapshot.get('final_probe_source')}`",
         f"- Reward: `{final_probe_metrics.get('reward')}`",
         f"- Coverage: `{final_probe_metrics.get('coverage')}`",
         f"- Success rate: `{final_probe_metrics.get('success_rate')}`",
         f"- Episode length: `{final_probe_metrics.get('episode_length')}`",
         f"- Repeat visit ratio: `{final_probe_metrics.get('repeat_visit_ratio')}`",
+        f"- Recent revisit trigger count: `{final_probe_reward_events.get('recent_revisit_trigger_count', final_probe_reward_events.get('recent_revisit_count'))}`",
         "",
-        "## 6. Stability / Monitoring",
-        f"- Timeout flag: `{final_probe_reward_events.get('timeout_flag')}`",
-        f"- Stall trigger count: `{final_probe_reward_events.get('stall_trigger_count')}`",
-        f"- Zero info step count: `{final_probe_reward_events.get('zero_info_step_count')}`",
-        f"- Recent revisit count: `{final_probe_reward_events.get('recent_revisit_count')}`",
+        "## 5. Training Dynamics Summary",
+        f"- Final window summary verdict: `{training_dynamics.get('final_window_summary', {}).get('verdict', 'UNSET')}`",
+        f"- Growth rate summary verdict: `{training_dynamics.get('growth_rate_summary', {}).get('verdict', 'UNSET')}`",
+        f"- Threshold reach summary verdict: `{training_dynamics.get('threshold_reach_summary', {}).get('verdict', 'UNSET')}`",
+        f"- Late-stage variance summary verdict: `{training_dynamics.get('late_stage_variance_summary', {}).get('verdict', 'UNSET')}`",
+        f"- Target training dynamics: `{training_dynamics.get('target', {})}`",
         "",
-        "## 7. Diagnostic Periodic Eval Context (optional)",
+        "## 6. Train-Final Consistency",
+        f"- Consistency verdict: `{train_final_consistency.get('verdict', 'UNSET')}`",
+        f"- Notes: `{train_final_consistency.get('notes', [])}`",
+        f"- Details: `{train_final_consistency.get('details', {})}`",
+        "",
+        "## 7. Optional Legacy Diagnostic Context",
+        f"- periodic_eval_available: `{legacy_context.get('periodic_eval_available')}`",
         f"- last_eval_diagnostic: `{metric_snapshot.get('last_eval', {}).get('metrics', {})}`",
         f"- best_eval_diagnostic: `{metric_snapshot.get('best_eval', {}).get('metrics', {})}`",
-        f"- best_checkpoint_source: `{metric_snapshot.get('best_checkpoint_source')}`",
+        f"- best_checkpoint_exists: `{legacy_context.get('best_checkpoint_exists')}`",
         "",
         "## 8. Efficiency",
         f"- total_runtime_sec: `{benchmark_summary.get('total_runtime_sec')}`",
@@ -650,11 +810,10 @@ def render_formal_gpt_input(
 ) -> str:
     verdicts = round_summary["verdicts"]
     stop_window_state = round_summary["stop_window_state"]
-    recent_train_support = round_summary.get("recent_train_support_summary", {})
-    recent_train_metrics = metric_snapshot.get("recent_train", {}).get("metrics", {})
+    training_dynamics = round_summary.get("training_dynamics_summary", {})
+    consistency_summary = round_summary.get("train_final_consistency_summary", {})
     final_probe_metrics = metric_snapshot.get("final_probe", {}).get("metrics", {})
-    best_eval_metrics = metric_snapshot.get("best_eval", {}).get("metrics", {})
-    last_eval_metrics = metric_snapshot.get("last_eval", {}).get("metrics", {})
+    legacy_context = metric_snapshot.get("legacy_diagnostic_context", {})
     return "\n".join(
         [
             "# GPT Input Package",
@@ -674,26 +833,29 @@ def render_formal_gpt_input(
             f"- Baseline round id: `{round_summary.get('baseline_round_id') or 'UNSET'}`",
             f"- Baseline commit sha: `{round_summary.get('baseline_commit_sha') or 'UNSET'}`",
             f"- Checks: `{comparability_report.get('checks', {})}`",
-            f"- Historical calibration: `available={round_summary['historical_calibration']['available']}, insufficient_history_for_calibration={round_summary['historical_calibration']['insufficient_history_for_calibration']}`",
             "",
-            "## 3. Metric Verdict Layer",
-            f"- Primary verdict: `{verdicts['primary_metric_verdict']}`",
-            f"- Secondary verdict: `{verdicts['secondary_metric_verdict']}`",
-            f"- Stability verdict: `{verdicts['stability_verdict']}`",
-            f"- Efficiency verdict: `{verdicts['efficiency_verdict']}`",
-            f"- Overall verdict: `{verdicts['overall_round_verdict']}`",
-            "",
-            "## 4. Final Probe (Formal Acceptance Object)",
+            "## 3. Final Probe (Formal Acceptance Object)",
             f"- final_probe: `{final_probe_metrics}`",
             f"- final_probe_source: `{metric_snapshot.get('final_probe_source')}`",
+            f"- formal_final_object: `{metric_snapshot.get('formal_final_object', {})}`",
+            f"- formal_verdicts: `primary={verdicts['primary_metric_verdict']}, secondary={verdicts['secondary_metric_verdict']}, stability={verdicts['stability_verdict']}`",
             "",
-            "## 5. Recent Train Support Summary",
-            f"- recent_train: `{recent_train_metrics}`",
-            f"- recent_train_support_summary: `{recent_train_support}`",
+            "## 4. Training Dynamics Summary",
+            f"- training_dynamics_verdict: `{training_dynamics.get('verdict', 'UNSET')}`",
+            f"- final_window_summary: `{training_dynamics.get('final_window_summary', {})}`",
+            f"- growth_rate_summary: `{training_dynamics.get('growth_rate_summary', {})}`",
+            f"- threshold_reach_summary: `{training_dynamics.get('threshold_reach_summary', {})}`",
+            f"- late_stage_variance_summary: `{training_dynamics.get('late_stage_variance_summary', {})}`",
+            f"- target_training_dynamics: `{training_dynamics.get('target', {})}`",
             "",
-            "## 6. Diagnostic Periodic Eval Context (optional)",
-            f"- best_eval_diagnostic: `{best_eval_metrics}`",
-            f"- last_eval_diagnostic: `{last_eval_metrics}`",
+            "## 5. Train-Final Consistency",
+            f"- recent_train_support_summary: `{round_summary.get('recent_train_support_summary', {})}`",
+            f"- train_final_consistency_summary: `{consistency_summary}`",
+            "",
+            "## 6. Optional Legacy Diagnostic Context",
+            f"- periodic_eval_available: `{legacy_context.get('periodic_eval_available')}`",
+            f"- last_eval_diagnostic: `{metric_snapshot.get('last_eval', {}).get('metrics', {})}`",
+            f"- best_eval_diagnostic: `{metric_snapshot.get('best_eval', {}).get('metrics', {})}`",
             f"- benchmark_summary: `runtime={benchmark_summary.get('total_runtime_sec')}, diagnostic_env_steps_to_best={benchmark_summary.get('diagnostic_env_steps_to_best', benchmark_summary.get('env_steps_to_best'))}`",
             "",
             "## 7. Stop Window",
@@ -709,7 +871,7 @@ def render_formal_gpt_input(
             f"- historical_baseline_summary: `path={round_summary.get('historical_baseline_summary_path') or 'UNSET'}, run_count_total={(historical_baseline_summary or {}).get('run_count_total')}, insufficient_history_for_calibration={(historical_baseline_summary or {}).get('insufficient_history_for_calibration')}`",
             "",
             "## 9. What GPT Should Output",
-            "- Read `docs/reading_order.md`, `docs/current_mainline.md`, `docs/evaluation_charter.md`, and `docs/output_contract.md` before drafting the next decision.",
+            "- Read `docs/evaluation_charter.md` and `docs/output_contract.md` before drafting the next decision.",
             "- Any claim of improvement must remain subordinate to comparability. If comparability failed or evidence is insufficient, do not accumulate a positive formal conclusion.",
             "- Output a single `next_gpt_decision.json` payload aligned with `docs/output_contract.md` and the dual-mode protocol schema.",
         ]

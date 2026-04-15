@@ -16,7 +16,7 @@ STABILITY_METRICS = (
     "timeout_flag",
     "stall_trigger_count",
     "zero_info_step_count",
-    "recent_revisit_count",
+    "recent_revisit_trigger_count",
 )
 
 
@@ -177,6 +177,8 @@ def _stability_value(metric_snapshot: dict[str, Any] | None, block_name: str, me
     if not isinstance(reward_events, dict):
         return None
     value = reward_events.get(metric_name)
+    if value is None and metric_name == "recent_revisit_trigger_count":
+        value = reward_events.get("recent_revisit_count")
     if isinstance(value, (int, float)):
         return float(value)
     return None
