@@ -10,6 +10,17 @@
 
 当前主叙事是 `formal_train`，rehearsal 只是兼容模式。
 
+新增的编号协议 P0 dry-run 入口是 `prepare_numbered_dry_run.py`。
+
+- 它只会在本地 staging 目录生成 `dry_run_no_train` round bundle。
+- 它不会启动 `fake_train.py`。
+- 它不会启动 `train_q_agent.py`。
+- 它不会调用 `DRL-path-finding`。
+- 它不会写入真实 `../RRL_test/rounds/round_0002`。
+- 它不会创建 `outbox/` 或 `next_gpt_decision.json`。
+
+现有 `prepare_round.py`、`publish_round_to_exchange.py`、`exchange_protocol.py` 仍主要服务 legacy rehearsal / pre-numbered formal path。它们目前不是编号协议 dry-run 的 active dependency。
+
 ## Codex 本地入口
 
 先读 `docs/codex_local_index.md`。
@@ -100,6 +111,11 @@
   - 会同步 `CURRENT_ROUND.json`、`index_manifest.json`、outbox 消息
   - 发布后会写入 `exchange_anchor_commit_sha`
   - `last_exchange_commit_sha` 仅作为 deprecated 兼容别名保留
+- `prepare_numbered_dry_run.py`
+  - 新编号协议的安全 dry-run/no-train 入口
+  - 只在 staging 目录生成最小 round bundle 和 `CURRENT_ROUND.json`
+- `rrl_numbered_protocol.py`
+  - 编号协议常量、preflight 分类、CURRENT_ROUND 新字段读写、checkpoint/outbox 防护
 
 ## formal_train 产物要求
 

@@ -42,8 +42,12 @@ Read these first:
 
 Read these first:
 
+- `rrl_numbered_protocol.py`
+  - Numbered protocol constants, dry-run preflight categories, CURRENT_ROUND helpers, and no-checkpoint / no-outbox guardrails.
+- `prepare_numbered_dry_run.py`
+  - Safe staging-only entry for `dry_run_no_train`.
 - `automation_protocol.py`
-  - Round schema, state files, protocol validation, and GPT/Codex text plumbing.
+  - Legacy rehearsal / pre-numbered round schema, state files, protocol validation, and GPT/Codex text plumbing.
 - `comparability.py`
   - Formal comparability logic and observed-run-contract checks.
 - `formal_round_summary.py`
@@ -63,11 +67,11 @@ Read these first:
 
 - `../RRL_test/CURRENT_ROUND.json`
   - Active-round pointer or clean waiting state.
-- `../RRL_test/docs/gpt_index_guide.md`
-  - GPT-side file map and evidence hierarchy.
-- `../RRL_test/docs/reading_order.md`
-  - GPT read sequence across docs and round evidence.
-- `../RRL_test/docs/output_contract.md`
+- `../RRL_test/docs/00_gpt_entry_guide.md`
+  - GPT-side numbered entry guide.
+- `../RRL_test/docs/05_round_protocol.md`
+  - Round-type and lifecycle authority.
+- `../RRL_test/docs/10_output_contract.md`
   - GPT output contract.
 
 ## File Role Boundaries
@@ -84,6 +88,8 @@ Read these first:
 - `prepare_gpt_input.py`
 - `publish_round_to_exchange.py`
 - `exchange_protocol.py`
+
+For numbered dry-run work, prefer `rrl_numbered_protocol.py` and `prepare_numbered_dry_run.py` first. Treat the older publish/exchange helpers as legacy unless the task explicitly targets them.
 
 These define behavior. If a README or generated summary disagrees with them, re-check the code.
 
@@ -147,11 +153,12 @@ These exist for compatibility or bridge validation. They are not the source for 
 
 Read:
 
+- `rrl_numbered_protocol.py`
 - `automation_protocol.py`
 - `formal_round_summary.py`
 - `exchange_protocol.py`
-- `../RRL_test/docs/gpt_index_guide.md`
-- `../RRL_test/docs/output_contract.md`
+- `../RRL_test/docs/05_round_protocol.md`
+- `../RRL_test/docs/10_output_contract.md`
 
 Goal: confirm schema, decision fields, and exchange-facing contracts line up.
 
@@ -196,8 +203,8 @@ Read:
 - `docs/codex_local_index.md`
 - `README.md`
 - `exchange_protocol.py`
-- `../RRL_test/docs/gpt_index_guide.md`
-- `../RRL_test/docs/reading_order.md`
+- `../RRL_test/docs/00_gpt_entry_guide.md`
+- `../RRL_test/docs/10_output_contract.md`
 - The implementation files named by the docs
 
 Goal: confirm the entry docs still describe the current code paths and artifact roles.

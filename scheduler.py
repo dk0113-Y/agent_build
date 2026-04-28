@@ -162,6 +162,26 @@ def outputs_dir(decision: GPTDecision | None = None) -> Path:
     return path
 
 
+def inspect_numbered_mode(decision_file: Path) -> tuple[str | None, str | None]:
+    """Return numbered-protocol round_type/operating_mode hints without trusting launchability.
+
+    Legacy decision files do not carry these fields. Numbered dry-run files may,
+    and they must never fall through into the training launcher.
+    """
+    try:
+        payload = json.loads(decision_file.read_text(encoding="utf-8"))
+    except Exception:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    round_type = payload.get("round_type")
+    operating_mode = payload.get("operating_mode")
+    return (
+        str(round_type).strip() if isinstance(round_type, str) else None,
+        str(operating_mode).strip() if isinstance(operating_mode, str) else None,
+    )
+
+
 def snapshot_existing_runs(base_dir: Path) -> set[str]:
     return {path.name for path in base_dir.iterdir() if path.is_dir()}
 
@@ -169,6 +189,16 @@ def snapshot_existing_runs(base_dir: Path) -> set[str]:
 def resolve_context(args: argparse.Namespace) -> SchedulerContext:
     if args.decision_file is not None:
         decision_file = args.decision_file.resolve()
+        round_type, operating_mode = inspect_numbered_mode(decision_file)
+        if round_type == "dry_run_no_train" or operating_mode == "dry_run_no_train":
+            return SchedulerContext(
+                mode="decision",
+                run_args=None,
+                round_dir=decision_file.parent,
+                decision=None,
+                should_launch=False,
+                exit_status="dry_run_no_train_blocked",
+            )
         decision = load_decision_file(decision_file)
         round_dir = decision_file.parent
         if decision.decision_status != "run_next_round":
