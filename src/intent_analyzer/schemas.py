@@ -83,6 +83,7 @@ class ReaderSemanticMemory:
     conditions: dict = field(default_factory=dict)
     evidence: list[dict] = field(default_factory=list)
     last_updated_at: str = ""
+    intent_weights: dict[str, float] | None = None
 
 
 @dataclass(slots=True)
@@ -122,4 +123,3 @@ class SessionState:
         self.pending_clarification = None
         self.pending_input_text = None
         self.pending_intent_candidates = []
-

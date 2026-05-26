@@ -1,7 +1,8 @@
 """User Intent Analyzer MVP."""
 
 from .analyzer import UserIntentAnalyzer, analyze_intent
-from .memory import InMemoryMemoryStore, MemoryStore
+from .memory import InMemoryMemoryStore, JsonMemoryStore, MemoryStore, get_intent_weights
+from .memory_policy import MemoryPolicyEngine
 from .schemas import (
     ClarificationOption,
     ClarificationRequest,
@@ -21,6 +22,8 @@ __all__ = [
     "FeedbackRecord",
     "InMemoryMemoryStore",
     "IntentCandidate",
+    "JsonMemoryStore",
+    "MemoryPolicyEngine",
     "MemoryStore",
     "MemoryUpdateCandidate",
     "ReaderSemanticMemory",
@@ -28,5 +31,5 @@ __all__ = [
     "UserIntentAnalyzer",
     "UserIntentIR",
     "analyze_intent",
+    "get_intent_weights",
 ]
-

@@ -73,9 +73,18 @@ def analyze_intent(
     memories = []
     if memory_store is not None:
         memories = memory_store.query_reader_semantic_memory(user_id, raw_text, context)
-        candidates = apply_memory_bias(candidates, memories, raw_text)
+        candidates = apply_memory_bias(
+            candidates,
+            memories,
+            raw_text,
+            context=context,
+            session_state=session_state,
+            diagnostics=diagnostics,
+        )
 
     candidates = sort_candidates(candidates)
+    if any(candidate.slots.get("simple_payload_fallback") for candidate in candidates):
+        diagnostics["simple_payload_fallback"] = True
     ambiguity, ambiguity_reason = is_ambiguous(candidates, raw_text, session_state)
     diagnostics["ambiguity_reason"] = ambiguity_reason
     diagnostics["memory_matches"] = [memory.memory_id for memory in memories]
@@ -234,4 +243,3 @@ def _build_clarification(
         options=options,
         reason=ambiguity_reason,
     )
-

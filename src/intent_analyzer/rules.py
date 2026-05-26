@@ -16,9 +16,12 @@ INTENT_UNKNOWN = "unknown"
 LONG_TEXT_MIN_CHARS = 180
 
 _MATH_EXPR_RE = re.compile(
-    r"(?<![\d.])"
-    r"([()\d][()\d.\s+\-*/×÷]*[+\-*/×÷][()\d.\s+\-*/×÷]*\d\)*)"
+    r"(?<![A-Za-z0-9_.-])"
+    r"(\(?\s*\d+(?:\.\d+)?\s*\)?"
+    r"(?:\s*[+\-*/×÷]\s*\(?\s*\d+(?:\.\d+)?\s*\)?)+)"
+    r"(?![A-Za-z0-9_.-])"
 )
+_DATE_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
 
 _PUNCT_RE = re.compile(r"[，。！？?！、；;：:\s]+")
 
@@ -49,6 +52,17 @@ ANALYSIS_DIMENSION_KEYWORDS = {
     "可行性": "feasibility",
     "架构": "architecture",
 }
+INSTRUCTION_KEYWORDS = (
+    "请",
+    "帮我",
+    "看看",
+    "分析",
+    "总结",
+    "概括",
+    "改写",
+    "润色",
+    "担心",
+)
 
 REQUIRED_SLOTS = {
     INTENT_COMPUTE: ["expression"],
@@ -77,14 +91,35 @@ def normalize_text(text: str) -> str:
 
 
 def extract_math_expression(text: str) -> str | None:
-    match = _MATH_EXPR_RE.search(text)
-    if not match:
-        return None
-    return re.sub(r"\s+", "", match.group(1).strip()).replace("×", "*").replace("÷", "/")
+    for match in _MATH_EXPR_RE.finditer(text):
+        raw_expression = match.group(1).strip()
+        expression = _normalize_expression(raw_expression)
+        if _is_valid_math_expression(expression, text):
+            return expression
+    return None
 
 
 def has_math_expression(text: str) -> bool:
     return extract_math_expression(text) is not None
+
+
+def _normalize_expression(expression: str) -> str:
+    return re.sub(r"\s+", "", expression).replace("×", "*").replace("÷", "/")
+
+
+def _is_valid_math_expression(expression: str, text: str) -> bool:
+    if _DATE_RE.fullmatch(expression):
+        return False
+    operators = [char for char in expression if char in "+-*/"]
+    if not operators:
+        return False
+    if set(operators) == {"-"} and not _has_compute_context(text):
+        return False
+    return True
+
+
+def _has_compute_context(text: str) -> bool:
+    return any(keyword in text for keyword in COMPUTE_KEYWORDS)
 
 
 def classify_input(text: str, session_state: SessionState | None = None) -> tuple[InputType, str]:
@@ -157,6 +192,98 @@ def extract_instruction_hint(text: str) -> str:
     return f"{parts[0][:80]} ... {parts[-1][:80]}"
 
 
+def extract_instruction_and_payload(text: str) -> dict:
+    lines = [(index, line.strip()) for index, line in enumerate(text.splitlines()) if line.strip()]
+    dimensions = extract_analysis_dimensions(text)
+    if not lines:
+        return {
+            "instruction": "",
+            "payload": text,
+            "instruction_position": "unknown",
+            "instruction_hint": "",
+            "analysis_dimensions": dimensions,
+            "simple_payload_fallback": True,
+        }
+
+    instruction_lines = [
+        (index, line)
+        for index, line in lines
+        if _looks_like_instruction(line)
+    ]
+    if not instruction_lines:
+        return {
+            "instruction": extract_instruction_hint(text),
+            "payload": text,
+            "instruction_position": "unknown",
+            "instruction_hint": extract_instruction_hint(text),
+            "analysis_dimensions": dimensions,
+            "simple_payload_fallback": True,
+        }
+
+    mixed_instruction_line = any(
+        _first_instruction_marker_index(line) > 30
+        for _index, line in instruction_lines
+    )
+    line_lookup = {index: line for index, line in lines}
+    instruction_indexes = {index for index, _line in instruction_lines}
+    payload_lines = [
+        line
+        for index, line in lines
+        if index not in instruction_indexes
+    ]
+    payload = "\n".join(payload_lines).strip()
+    simple_fallback = mixed_instruction_line
+    if mixed_instruction_line:
+        payload = text
+    if not payload or len(payload) < 20:
+        payload = text
+        simple_fallback = True
+
+    instruction = "\n".join(line for _index, line in instruction_lines).strip()
+    position = _instruction_position(
+        instruction_indexes=instruction_indexes,
+        all_indexes=set(line_lookup),
+    )
+    return {
+        "instruction": instruction,
+        "payload": payload,
+        "instruction_position": position,
+        "instruction_hint": instruction[:120] if instruction else extract_instruction_hint(text),
+        "analysis_dimensions": dimensions,
+        "simple_payload_fallback": simple_fallback,
+    }
+
+
+def _looks_like_instruction(line: str) -> bool:
+    if re.search(r"从.+角度", line):
+        return True
+    return any(keyword in line for keyword in INSTRUCTION_KEYWORDS)
+
+
+def _first_instruction_marker_index(line: str) -> int:
+    indexes = [line.find(keyword) for keyword in INSTRUCTION_KEYWORDS if keyword in line]
+    angle_match = re.search(r"从.+角度", line)
+    if angle_match:
+        indexes.append(angle_match.start())
+    return min(indexes) if indexes else -1
+
+
+def _instruction_position(instruction_indexes: set[int], all_indexes: set[int]) -> str:
+    if not instruction_indexes or not all_indexes:
+        return "unknown"
+    first = min(all_indexes)
+    last = max(all_indexes)
+    has_head = first in instruction_indexes
+    has_tail = last in instruction_indexes
+    if has_head and has_tail and len(all_indexes) > 1:
+        return "both"
+    if has_head:
+        return "head"
+    if has_tail:
+        return "tail"
+    return "unknown"
+
+
 def _candidate(intent: str, confidence: float, slots: dict, evidence: list[str]) -> IntentCandidate:
     return IntentCandidate(
         intent=intent,
@@ -218,35 +345,55 @@ def generate_intent_candidates(text: str, input_type: InputType) -> list[IntentC
 
     if contains_any(text, ANALYZE_KEYWORDS):
         confidence = 0.90 if input_type == "long_text" else 0.72
+        extracted = extract_instruction_and_payload(text)
         candidates.append(
             _candidate(
                 INTENT_ANALYZE_PLAN,
                 confidence,
                 {
-                    "payload": text,
-                    "instruction_hint": extract_instruction_hint(text),
-                    "analysis_dimensions": extract_analysis_dimensions(text),
+                    "payload": extracted["payload"],
+                    "instruction": extracted["instruction"],
+                    "instruction_position": extracted["instruction_position"],
+                    "instruction_hint": extracted["instruction_hint"],
+                    "analysis_dimensions": extracted["analysis_dimensions"],
+                    "simple_payload_fallback": extracted["simple_payload_fallback"],
                 },
                 ["analysis_keyword"] + (["long_text"] if input_type == "long_text" else []),
             )
         )
 
     if contains_any(text, SUMMARIZE_KEYWORDS):
+        extracted = extract_instruction_and_payload(text)
         candidates.append(
             _candidate(
                 INTENT_SUMMARIZE,
                 0.82 if input_type == "long_text" else 0.68,
-                {"payload": text, "instruction_hint": extract_instruction_hint(text)},
+                {
+                    "payload": extracted["payload"],
+                    "instruction": extracted["instruction"],
+                    "instruction_position": extracted["instruction_position"],
+                    "instruction_hint": extracted["instruction_hint"],
+                    "analysis_dimensions": extracted["analysis_dimensions"],
+                    "simple_payload_fallback": extracted["simple_payload_fallback"],
+                },
                 ["summarize_keyword"],
             )
         )
 
     if contains_any(text, REWRITE_KEYWORDS):
+        extracted = extract_instruction_and_payload(text)
         candidates.append(
             _candidate(
                 INTENT_REWRITE,
                 0.82 if input_type == "long_text" else 0.68,
-                {"payload": text, "instruction_hint": extract_instruction_hint(text)},
+                {
+                    "payload": extracted["payload"],
+                    "instruction": extracted["instruction"],
+                    "instruction_position": extracted["instruction_position"],
+                    "instruction_hint": extracted["instruction_hint"],
+                    "analysis_dimensions": extracted["analysis_dimensions"],
+                    "simple_payload_fallback": extracted["simple_payload_fallback"],
+                },
                 ["rewrite_keyword"],
             )
         )
