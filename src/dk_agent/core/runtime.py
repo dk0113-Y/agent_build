@@ -17,6 +17,7 @@ class AgentRuntime:
         meta_controller: MetaController | None = None,
         direct_executor: DirectExecutor | None = None,
         graph_runner: AgentGraphRunner | None = None,
+        thread_id: str | None = None,
     ) -> None:
         self.gateway = gateway
         self.meta_controller = meta_controller or MetaController(gateway)
@@ -24,6 +25,7 @@ class AgentRuntime:
         self.graph_runner = graph_runner or AgentGraphRunner(
             meta_controller=self.meta_controller,
             direct_executor=self.direct_executor,
+            thread_id=thread_id,
         )
 
     @property
@@ -38,5 +40,5 @@ class AgentRuntime:
         return self.graph_runner.run(request)
 
 
-def create_default_runtime() -> AgentRuntime:
-    return AgentRuntime(DeepSeekClient())
+def create_default_runtime(thread_id: str | None = None) -> AgentRuntime:
+    return AgentRuntime(DeepSeekClient(), thread_id=thread_id)

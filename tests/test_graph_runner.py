@@ -95,7 +95,7 @@ class FakeDirectExecutor:
 
 
 class GraphRunnerTests(unittest.TestCase):
-    def test_pending_clarification_resume_reenters_graph_and_clears_pending(self) -> None:
+    def test_interrupt_resume_reenters_graph_with_same_thread_and_clears_pending(self) -> None:
         meta = FakeMetaController(
             [
                 decision(
@@ -107,13 +107,17 @@ class GraphRunnerTests(unittest.TestCase):
             ]
         )
         executor = FakeDirectExecutor()
-        runner = AgentGraphRunner(meta_controller=meta, direct_executor=executor)
+        runner = AgentGraphRunner(meta_controller=meta, direct_executor=executor, thread_id="thread-a")
 
         first = runner.run(AgentRequest(user_text="Optimize this"))
         second = runner.run(AgentRequest(user_text="Discuss architecture only"))
 
         self.assertEqual(first.route, "meta->clarify")
+        self.assertEqual(first.metadata["thread_id"], "thread-a")
+        self.assertEqual(first.metadata["interrupt_payload"]["question"], "What should I optimize?")
         self.assertEqual(second.route, "meta->direct-chat")
+        self.assertEqual(second.metadata["thread_id"], "thread-a")
+        self.assertFalse(runner.awaiting_clarification)
         self.assertIsNone(runner.pending_clarification)
         self.assertTrue(meta.calls[1]["is_clarification_resume"])
         enriched = meta.calls[1]["user_text"]
@@ -123,10 +127,90 @@ class GraphRunnerTests(unittest.TestCase):
         self.assertIn("Discuss architecture only", enriched)
         self.assertEqual(executor.requests[0].user_text, enriched)
 
+    def test_resume_can_interrupt_again_when_meta_still_needs_clarification(self) -> None:
+        meta = FakeMetaController(
+            [
+                decision(
+                    need_clarification=True,
+                    clarification_question="What should I optimize?",
+                    missing_info=["scope"],
+                ),
+                decision(
+                    need_clarification=True,
+                    clarification_question="Which part of the architecture?",
+                    missing_info=["component"],
+                ),
+            ]
+        )
+        executor = FakeDirectExecutor()
+        runner = AgentGraphRunner(meta_controller=meta, direct_executor=executor, thread_id="thread-repeat")
+
+        first = runner.run(AgentRequest(user_text="Optimize this"))
+        second = runner.run(AgentRequest(user_text="The architecture"))
+
+        self.assertEqual(first.reply_text, "What should I optimize?")
+        self.assertEqual(second.route, "meta->clarify")
+        self.assertEqual(second.reply_text, "Which part of the architecture?")
+        self.assertTrue(runner.awaiting_clarification)
+        self.assertEqual(executor.requests, [])
+        self.assertTrue(meta.calls[1]["is_clarification_resume"])
+
+    def test_different_thread_ids_keep_interrupt_state_isolated(self) -> None:
+        runner_a = AgentGraphRunner(
+            meta_controller=FakeMetaController(
+                [
+                    decision(
+                        need_clarification=True,
+                        clarification_question="Question A?",
+                        missing_info=["a"],
+                    ),
+                    decision(),
+                ]
+            ),
+            direct_executor=FakeDirectExecutor(),
+            thread_id="thread-a",
+        )
+        runner_b = AgentGraphRunner(
+            meta_controller=FakeMetaController(
+                [
+                    decision(
+                        need_clarification=True,
+                        clarification_question="Question B?",
+                        missing_info=["b"],
+                    )
+                ]
+            ),
+            direct_executor=FakeDirectExecutor(),
+            thread_id="thread-b",
+        )
+
+        first_a = runner_a.run(AgentRequest(user_text="Optimize A"))
+        first_b = runner_b.run(AgentRequest(user_text="Optimize B"))
+        second_a = runner_a.run(AgentRequest(user_text="Discuss A only"))
+
+        self.assertEqual(first_a.reply_text, "Question A?")
+        self.assertEqual(first_b.reply_text, "Question B?")
+        self.assertEqual(second_a.route, "meta->direct-chat")
+        self.assertFalse(runner_a.awaiting_clarification)
+        self.assertTrue(runner_b.awaiting_clarification)
+        self.assertIsNotNone(runner_b.pending_clarification)
+        self.assertEqual(runner_b.pending_clarification.clarification_question, "Question B?")
+
+    def test_clear_request_does_not_interrupt(self) -> None:
+        meta = FakeMetaController([decision()])
+        executor = FakeDirectExecutor()
+        runner = AgentGraphRunner(meta_controller=meta, direct_executor=executor)
+
+        response = runner.run(AgentRequest(user_text="Explain LangGraph"))
+
+        self.assertEqual(response.route, "meta->direct-chat")
+        self.assertFalse(response.pending_clarification)
+        self.assertFalse(runner.awaiting_clarification)
+
     def test_agent_runtime_run_still_returns_agent_response(self) -> None:
         meta = FakeMetaController([decision()])
         executor = FakeDirectExecutor()
-        runtime = AgentRuntime(UnusedGateway(), meta_controller=meta, direct_executor=executor)
+        runtime = AgentRuntime(UnusedGateway(), meta_controller=meta, direct_executor=executor, thread_id="runtime")
 
         response = runtime.run(AgentRequest(user_text="Explain LangGraph"))
 
