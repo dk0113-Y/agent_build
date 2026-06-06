@@ -7,9 +7,8 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
 
-from dk_agent.core.runtime import AgentRuntime
+from dk_agent.core.runtime import create_default_runtime
 from dk_agent.core.types import AgentRequest, AgentResponse
-from dk_agent.llm.deepseek_client import DeepSeekClient
 
 
 AGENT_NAME = "dk-agent"
@@ -45,7 +44,6 @@ class DkAgentTUI(App):
         padding: 1 2;
         overflow-y: auto;
         background: #0B1020;
-
         scrollbar-size-vertical: 1;
         scrollbar-size-horizontal: 0;
         scrollbar-color: #4D6BFD 45%;
@@ -68,49 +66,13 @@ class DkAgentTUI(App):
         color: #EAF0FF;
     }
 
-    Input:focus {
-        border: none;
-    }
-
-    .user-message {
-        margin: 1 0 0 0;
-        color: #EAF0FF;
-    }
-
-    .agent-label {
-        margin: 1 0 0 0;
-        color: #6F8BFF;
-        text-style: bold;
-    }
-
-    .agent-meta {
-        margin: 0 0 0 2;
-        padding: 0 1;
-        border: solid #4D6BFD;
-        color: #AFC0FF;
-        background: #0F172A;
-    }
-
-    .agent-body {
-        margin: 0 0 1 2;
-        color: #DCE7FF;
-    }
-
-    .help-box {
-        margin: 1 0;
-        padding: 0 1;
-        border: solid #4D6BFD;
-        color: #DCE7FF;
-        background: #0F172A;
-    }
-
-    .error-box {
-        margin: 1 0;
-        padding: 0 1;
-        border: solid #EF4444;
-        color: #FCA5A5;
-        background: #1F1111;
-    }
+    Input:focus { border: none; }
+    .user-message { margin: 1 0 0 0; color: #EAF0FF; }
+    .agent-label { margin: 1 0 0 0; color: #6F8BFF; text-style: bold; }
+    .agent-meta { margin: 0 0 0 2; padding: 0 1; border: solid #4D6BFD; color: #AFC0FF; background: #0F172A; }
+    .agent-body { margin: 0 0 1 2; color: #DCE7FF; }
+    .help-box { margin: 1 0; padding: 0 1; border: solid #4D6BFD; color: #DCE7FF; background: #0F172A; }
+    .error-box { margin: 1 0; padding: 0 1; border: solid #EF4444; color: #FCA5A5; background: #1F1111; }
     """
 
     def compose(self) -> ComposeResult:
@@ -120,10 +82,10 @@ class DkAgentTUI(App):
 
     def on_mount(self) -> None:
         self.selected_text: str | None = None
-        self.runtime = AgentRuntime(DeepSeekClient())
+        self.runtime = create_default_runtime()
         self.query_one("#input", Input).focus()
         self._append_system_message(
-            "TUI v0.3 已启动：AgentRuntime + ModelGateway + DeepSeek direct-chat。"
+            "TUI v0.4 started: AgentRuntime + MetaController + Clarification Gate + DeepSeek direct executor."
         )
 
     def _topbar_text(self) -> str:
@@ -138,25 +100,21 @@ class DkAgentTUI(App):
         return "输入消息，或输入 /help、/exit"
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        input_widget = event.input
         try:
-            input_widget.cursor_position = len(event.value)
+            event.input.cursor_position = len(event.value)
         except Exception:
             pass
 
     def _selection_preview(self, text: str, max_chars: int = 24) -> str:
-        """Return a compact head+tail preview for selected text."""
         cleaned = " ".join(text.split())
         if len(cleaned) <= max_chars:
             return cleaned
-
         budget = max_chars - 1
         head_len = budget // 2
         tail_len = budget - head_len
         return f"{cleaned[:head_len]}…{cleaned[-tail_len:]}"
 
     def _selected_agent_body_text(self) -> str | None:
-        """Return selected text only when every selected widget is an agent body."""
         selections = getattr(self.screen, "selections", None)
         if not selections:
             return None
@@ -165,29 +123,23 @@ class DkAgentTUI(App):
         for widget, selection in list(selections.items()):
             if not getattr(widget, "is_attached", False):
                 continue
-
             try:
                 widget_selection = widget.get_selection(selection)
             except Exception:
                 return None
-
             if not widget_selection:
                 continue
-
             widget_text = "".join(widget_selection)
             if not widget_text.strip():
                 continue
-
             if not widget.has_class("agent-body"):
                 return None
-
             selected_parts.append(widget_text)
 
         selected = "".join(selected_parts).strip()
         return selected or None
 
     def action_ask_selected_text(self) -> None:
-        """Enter question mode using the current Textual text selection."""
         try:
             selected = self.screen.get_selected_text()
         except Exception:
@@ -207,24 +159,20 @@ class DkAgentTUI(App):
 
         self.selected_text = agent_selected
         preview = self._selection_preview(self.selected_text)
-
         input_widget = self.query_one("#input", Input)
         input_widget.placeholder = f"已选择“{preview}”文本，请输入问题"
         input_widget.focus()
-
         try:
             self.screen.clear_selection()
         except Exception:
             pass
 
     def action_clear_selected_text(self) -> None:
-        """Clear current selected-text question mode."""
         self.selected_text = None
         try:
             self.screen.clear_selection()
         except Exception:
             pass
-
         input_widget = self.query_one("#input", Input)
         input_widget.placeholder = self._default_placeholder()
         input_widget.focus()
@@ -235,14 +183,9 @@ class DkAgentTUI(App):
     def _format_tokens(self, usage: dict[str, Any] | None) -> str:
         if not usage:
             return "--"
-
         input_tokens = usage.get("input_tokens", usage.get("prompt_tokens"))
         output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
         total_tokens = usage.get("total_tokens")
-
-        if input_tokens is None and output_tokens is None and total_tokens is None:
-            return "--"
-
         parts = []
         if input_tokens is not None:
             parts.append(f"input: {input_tokens}")
@@ -273,7 +216,6 @@ class DkAgentTUI(App):
         text = event.value.strip()
         input_widget = self.query_one("#input", Input)
         input_widget.value = ""
-
         if not text:
             return
 
@@ -294,11 +236,7 @@ class DkAgentTUI(App):
                 selected = self.selected_text
                 selected_preview = self._selection_preview(selected)
                 self._append_user_message(f"针对选中文本“{selected_preview}”提问：{text}")
-                request = AgentRequest(
-                    user_text=text,
-                    selected_text=selected,
-                    mode="selected_text_question",
-                )
+                request = AgentRequest(user_text=text, selected_text=selected, mode="selected_text_question")
             else:
                 self._append_user_message(text)
                 request = AgentRequest(user_text=text, mode="chat")
@@ -310,7 +248,6 @@ class DkAgentTUI(App):
         finally:
             if self.selected_text:
                 self.action_clear_selected_text()
-
         await self._scroll_to_end()
 
     def _conversation(self) -> VerticalScroll:
@@ -321,9 +258,7 @@ class DkAgentTUI(App):
 
     def _append_agent_reply(self, response: AgentResponse) -> None:
         conv = self._conversation()
-
         conv.mount(Static("Agent:", classes="agent-label"))
-
         meta = (
             f"Tokens: {self._format_tokens(response.usage)} | "
             f"Route: {response.route} | "
@@ -334,7 +269,9 @@ class DkAgentTUI(App):
             f"Web: off | "
             f"Tools: {self._format_capabilities(response.tools)} | "
             f"Skills: {self._format_capabilities(response.skills)} | "
-            f"Verifiers: {self._format_capabilities(response.verifiers)}"
+            f"Verifiers: {self._format_capabilities(response.verifiers)}\n"
+            "Meta: medium | "
+            f"Clarification: {'pending' if response.pending_clarification else 'off'}"
         )
         conv.mount(Static(meta, classes="agent-meta"))
         conv.mount(Static(response.reply_text, classes="agent-body"))
@@ -344,9 +281,9 @@ class DkAgentTUI(App):
             "可用命令：\n"
             "/help 或 /帮助  显示帮助\n"
             "/exit 或 /退出  退出 TUI\n\n"
-            "当前阶段：V0.3 AgentRuntime + ModelGateway + DeepSeek direct-chat。\n"
-            "尚未接入 MetaController、LangGraph、DeepAgents、Tools、Web、"
-            "Skills、Memory 和上下文压缩。"
+            "当前阶段：V0.4 MetaController + Clarification Gate + DeepSeek direct executor。\n"
+            "已接入：AgentRuntime、ModelGateway、MetaDecision、MetaController、PendingClarification。\n"
+            "尚未接入：LangGraph、DeepAgents、LiteLLM、Tools、Web、Skills 执行、Memory、上下文压缩、Judge 审查。"
         )
         self._conversation().mount(Static(help_text, classes="help-box"))
 
@@ -354,8 +291,7 @@ class DkAgentTUI(App):
         self._conversation().mount(Static(text, classes="help-box"))
 
     async def _scroll_to_end(self) -> None:
-        conversation = self._conversation()
-        conversation.scroll_end(animate=False)
+        self._conversation().scroll_end(animate=False)
 
 
 if __name__ == "__main__":

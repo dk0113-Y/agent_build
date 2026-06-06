@@ -28,3 +28,8 @@ class AgentResponse:
     usage: dict[str, Any] | None = None
     elapsed_seconds: float = 0.0
     error: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    meta_decision: dict[str, Any] | None = None
+    meta_route: str | None = None
+    need_clarification: bool = False
+    pending_clarification: bool = False
