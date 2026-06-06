@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Input, Static
@@ -13,6 +15,73 @@ from dk_agent.core.types import AgentRequest, AgentResponse
 
 AGENT_NAME = "dk-agent"
 PROJECT_NAME = "lg-deepagent"
+
+
+_BOLD_PATTERN = re.compile(r"\*\*(.+?)\*\*")
+_HEADING_PATTERN = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*$")
+_BULLET_PATTERN = re.compile(r"^(\s*)[-+*]\s+(.+?)\s*$")
+
+
+def markdown_to_visible_text(markdown: str) -> str:
+    lines: list[str] = []
+    for line in markdown.splitlines():
+        heading_match = _HEADING_PATTERN.match(line)
+        if heading_match:
+            lines.append(_strip_inline_markdown(heading_match.group(1)))
+            continue
+
+        bullet_match = _BULLET_PATTERN.match(line)
+        if bullet_match:
+            indent = bullet_match.group(1)
+            lines.append(f"{indent}\u2022 {_strip_inline_markdown(bullet_match.group(2))}")
+            continue
+
+        lines.append(_strip_inline_markdown(line))
+
+    return "\n".join(lines).strip()
+
+
+def markdown_to_text(markdown: str) -> Text:
+    rendered = Text()
+    for line_number, line in enumerate(markdown.splitlines()):
+        if line_number:
+            rendered.append("\n")
+        _append_markdown_line(rendered, line)
+    return rendered
+
+
+def _append_markdown_line(rendered: Text, line: str) -> None:
+    heading_match = _HEADING_PATTERN.match(line)
+    if heading_match:
+        _append_inline_markdown(rendered, heading_match.group(1), style="bold")
+        return
+
+    bullet_match = _BULLET_PATTERN.match(line)
+    if bullet_match:
+        rendered.append(f"{bullet_match.group(1)}\u2022 ")
+        _append_inline_markdown(rendered, bullet_match.group(2))
+        return
+
+    _append_inline_markdown(rendered, line)
+
+
+def _append_inline_markdown(rendered: Text, text: str, style: str | None = None) -> None:
+    position = 0
+    for match in _BOLD_PATTERN.finditer(text):
+        if match.start() > position:
+            rendered.append(_strip_backticks(text[position : match.start()]), style=style)
+        rendered.append(_strip_backticks(match.group(1)), style="bold")
+        position = match.end()
+    if position < len(text):
+        rendered.append(_strip_backticks(text[position:]), style=style)
+
+
+def _strip_inline_markdown(text: str) -> str:
+    return _strip_backticks(_BOLD_PATTERN.sub(lambda match: match.group(1), text))
+
+
+def _strip_backticks(text: str) -> str:
+    return text.replace("`", "")
 
 
 class DkAgentTUI(App):
@@ -129,7 +198,7 @@ class DkAgentTUI(App):
                 return None
             if not widget_selection:
                 continue
-            widget_text = "".join(widget_selection)
+            widget_text = widget_selection[0]
             if not widget_text.strip():
                 continue
             if not widget.has_class("agent-body"):
@@ -274,7 +343,7 @@ class DkAgentTUI(App):
             f"Clarification: {'pending' if response.pending_clarification else 'off'}"
         )
         conv.mount(Static(meta, classes="agent-meta"))
-        conv.mount(Static(response.reply_text, classes="agent-body"))
+        conv.mount(Static(markdown_to_text(response.reply_text), classes="agent-body"))
 
     def _append_help(self) -> None:
         help_text = (
