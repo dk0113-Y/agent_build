@@ -1,0 +1,5 @@
+textual
+rich
+langgraph
+pydantic
+langchain-deepseek

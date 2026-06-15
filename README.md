@@ -25,7 +25,7 @@ Design goals visible in the current codebase:
 - LangChain DeepSeek integration through `langchain_deepseek.ChatDeepSeek`
 - `unittest` for the current test suite
 
-There is currently no `pyproject.toml`, `requirements.txt`, or lockfile in this repository. The dependency list above is inferred from imports in `src/` and `tests/`.
+`requirements.txt` lists the runtime libraries currently imported by `src/` and `tests/`. There is no `pyproject.toml` or lockfile in this repository.
 
 ## Core Features
 
@@ -123,10 +123,10 @@ If you use the existing local virtual environment in this checkout:
 PYTHONPATH=src ./.venv/bin/python -m dk_agent.app.tui_app
 ```
 
-For a fresh environment, install the imports used by the current code before running:
+For a fresh environment, install the dependency manifest before running:
 
 ```bash
-python -m pip install textual rich langgraph pydantic langchain-deepseek
+python -m pip install -r requirements.txt
 ```
 
 Do not commit `.env` files or real API keys. The code expects secrets to come from environment variables.
