@@ -1,12 +1,21 @@
 # lg-deepagent
 
-`lg-deepagent` is a Python prototype for a terminal-based AI assistant. It focuses on a layered TUI + runtime architecture: Textual renders the chat interface, `AgentRuntime` owns the execution entrypoint, a MetaController decides whether a request can be answered directly or needs clarification, and a DeepSeek-backed executor produces the final response.
+`lg-deepagent` is a Python prototype for a terminal-based AI assistant.
 
-The repository is positioned as an internship portfolio project for AI agent application engineering, especially around LLM routing, LangGraph control flow, TUI interaction, and testable runtime boundaries.
+It focuses on a layered TUI and runtime architecture:
+Textual renders the chat interface, `AgentRuntime` owns the execution
+entrypoint, a MetaController decides whether a request can be answered
+directly or needs clarification, and a DeepSeek-backed executor produces
+the final response.
+
+The repository is positioned as an internship portfolio project for AI agent
+application engineering, especially around LLM routing, LangGraph control
+flow, TUI interaction, and testable runtime boundaries.
 
 ## Project Background and Goals
 
-This project explores how to move a simple terminal chatbot toward an agent-style architecture without hiding everything inside the UI layer.
+This project explores how to move a simple terminal chatbot toward an
+agent-style architecture without hiding everything inside the UI layer.
 
 Design goals visible in the current codebase:
 
@@ -25,7 +34,8 @@ Design goals visible in the current codebase:
 - LangChain DeepSeek integration through `langchain_deepseek.ChatDeepSeek`
 - `unittest` for the current test suite
 
-`requirements.txt` lists the runtime libraries currently imported by `src/` and `tests/`. There is no `pyproject.toml` or lockfile in this repository.
+`requirements.txt` lists the runtime libraries currently imported by `src/`
+and `tests/`. There is no `pyproject.toml` or lockfile in this repository.
 
 ## Core Features
 
@@ -42,38 +52,40 @@ Design goals visible in the current codebase:
 
 ```text
 .
-+-- src/
+|-- README.md
+|-- requirements.txt
+|-- src/
 |   `-- dk_agent/
-|       +-- app/
+|       |-- app/
 |       |   `-- tui_app.py              # Textual UI and selected-text interaction
-|       +-- core/
-|       |   +-- runtime.py              # AgentRuntime entrypoint
-|       |   +-- session_state.py        # Pending clarification state
+|       |-- core/
+|       |   |-- runtime.py              # AgentRuntime entrypoint
+|       |   |-- session_state.py        # Pending clarification state
 |       |   `-- types.py                # AgentRequest / AgentResponse dataclasses
-|       +-- executor/
+|       |-- executor/
 |       |   `-- direct_executor.py      # Builds messages and calls the model gateway
-|       +-- graph/
-|       |   +-- graph.py                # LangGraph StateGraph wiring
-|       |   +-- nodes.py                # Meta, clarification, execute, response nodes
-|       |   +-- routing.py              # Clarification/execute routing policy
-|       |   +-- runner.py               # Graph runner and interrupt/resume handling
+|       |-- graph/
+|       |   |-- graph.py                # LangGraph StateGraph wiring
+|       |   |-- nodes.py                # Meta, clarification, execute, response nodes
+|       |   |-- routing.py              # Clarification/execute routing policy
+|       |   |-- runner.py               # Graph runner and interrupt/resume handling
 |       |   `-- state.py                # Graph state schema
-|       +-- llm/
-|       |   +-- deepseek_client.py      # DeepSeek client wrapper
+|       |-- llm/
+|       |   |-- deepseek_client.py      # DeepSeek client wrapper
 |       |   `-- gateway.py              # Gateway protocol and LLM result type
-|       +-- prompts/
+|       |-- prompts/
 |       |   `-- meta_controller.md      # MetaController system prompt
 |       `-- routing/
-|           +-- meta_controller.py      # JSON parsing and fallback behavior
+|           |-- meta_controller.py      # JSON parsing and fallback behavior
 |           `-- meta_schema.py          # Pydantic MetaDecision schema
 `-- tests/
-    +-- test_graph_flow.py
-    +-- test_graph_interrupt.py
-    +-- test_graph_runner.py
-    +-- test_meta_controller.py
-    +-- test_meta_schema.py
-    +-- test_runtime.py
-    +-- test_runtime_clarification.py
+    |-- test_graph_flow.py
+    |-- test_graph_interrupt.py
+    |-- test_graph_runner.py
+    |-- test_meta_controller.py
+    |-- test_meta_schema.py
+    |-- test_runtime.py
+    |-- test_runtime_clarification.py
     `-- test_tui_markdown.py
 ```
 
@@ -81,23 +93,47 @@ Design goals visible in the current codebase:
 
 ### Textual TUI
 
-`src/dk_agent/app/tui_app.py` defines `DkAgentTUI`. It handles user input, `/help`, `/exit`, selected-text mode via `Alt+Z`, metadata display, loading messages, and lightweight Markdown rendering for agent replies.
+`src/dk_agent/app/tui_app.py` defines `DkAgentTUI`.
+
+It handles user input, `/help`, `/exit`, selected-text mode via `Alt+Z`,
+metadata display, loading messages, and lightweight Markdown rendering for
+agent replies.
 
 ### Runtime Layer
 
-`src/dk_agent/core/runtime.py` exposes `AgentRuntime` and `create_default_runtime()`. The runtime wires together the model gateway, MetaController, direct executor, and LangGraph runner so the UI only depends on a stable request/response interface.
+`src/dk_agent/core/runtime.py` exposes `AgentRuntime` and
+`create_default_runtime()`.
+
+The runtime wires together the model gateway, MetaController, direct executor,
+and LangGraph runner so the UI only depends on a stable request/response
+interface.
 
 ### MetaController and Schema
 
-`src/dk_agent/routing/meta_controller.py` calls the model gateway with `prompts/meta_controller.md`, extracts strict JSON, validates it with `MetaDecision`, and falls back to a conservative default when parsing fails. `meta_schema.py` restricts allowed roles, autonomy modes, tools, skills, verifiers, and risk levels.
+`src/dk_agent/routing/meta_controller.py` calls the model gateway with
+`prompts/meta_controller.md`, extracts strict JSON, validates it with
+`MetaDecision`, and falls back to a conservative default when parsing fails.
+
+`src/dk_agent/routing/meta_schema.py` restricts allowed roles, autonomy modes,
+tools, skills, verifiers, and risk levels.
 
 ### LangGraph Flow
 
-`src/dk_agent/graph/graph.py` builds the graph. `routing.py` sends requests to clarification when the MetaDecision requests clarification, requires human approval, or asks for high-privilege autonomy modes such as file edits or command execution. `runner.py` manages thread IDs, interrupt payloads, resume calls, and pending clarification state.
+`src/dk_agent/graph/graph.py` builds the graph.
+
+`src/dk_agent/graph/routing.py` sends requests to clarification when the
+MetaDecision requests clarification, requires human approval, or asks for
+high-privilege autonomy modes such as file edits or command execution.
+
+`src/dk_agent/graph/runner.py` manages thread IDs, interrupt payloads, resume
+calls, and pending clarification state.
 
 ### DeepSeek Gateway
 
-`src/dk_agent/llm/deepseek_client.py` reads `DEEPSEEK_API_KEY` from the environment, calls `ChatDeepSeek`, normalizes response content and usage metadata, and returns structured errors for missing keys or invocation failures.
+`src/dk_agent/llm/deepseek_client.py` reads `DEEPSEEK_API_KEY` from the
+environment, calls `ChatDeepSeek`, normalizes response content and usage
+metadata, and returns structured errors for missing keys or invocation
+failures.
 
 ## What I Built
 
@@ -109,12 +145,22 @@ Design goals visible in the current codebase:
 
 ## Quick Start
 
-From the repository root:
+From the repository root, install dependencies:
 
 ```bash
-export PYTHONPATH=src
+python -m pip install -r requirements.txt
+```
+
+Set the API key through the environment:
+
+```bash
 export DEEPSEEK_API_KEY="your_api_key_here"
-python -m dk_agent.app.tui_app
+```
+
+Run the TUI:
+
+```bash
+PYTHONPATH=src python -m dk_agent.app.tui_app
 ```
 
 If you use the existing local virtual environment in this checkout:
@@ -123,13 +169,8 @@ If you use the existing local virtual environment in this checkout:
 PYTHONPATH=src ./.venv/bin/python -m dk_agent.app.tui_app
 ```
 
-For a fresh environment, install the dependency manifest before running:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Do not commit `.env` files or real API keys. The code expects secrets to come from environment variables.
+Do not commit `.env` files or real API keys. The code expects secrets to come
+from environment variables.
 
 ## Testing
 
@@ -145,13 +186,14 @@ Or with the local virtual environment:
 PYTHONPATH=src ./.venv/bin/python -m unittest discover -s tests
 ```
 
-The tests use fake gateways and fake executors for most flows, so they do not require live DeepSeek access. The missing-key branch is covered explicitly.
+The tests use fake gateways and fake executors for most flows, so they do not
+require live DeepSeek access. The missing-key branch is covered explicitly.
 
 ## Current Status and Limitations
 
 - Implemented: layered TUI/runtime/LLM boundaries, MetaController JSON schema, LangGraph clarification gate, selected-text question flow, and unit tests for core runtime behavior.
+- Implemented: a lightweight `requirements.txt` dependency manifest for the libraries imported by the current codebase.
 - Not implemented: real tool execution, web access, memory, DeepAgents integration, LiteLLM routing, judge model verification, context compression, and production packaging.
-- No dependency manifest is currently committed, so setup is manual.
 - Live DeepSeek success depends on a valid `DEEPSEEK_API_KEY` and network access; the automated tests do not prove live model availability.
 - Some Chinese UI strings in `tui_app.py` appear as mojibake in the current source display. This README documents the issue but does not change UI behavior.
 - `.env` is ignored by `.gitignore`, but local secret files still need to be kept out of commits and screenshots.
