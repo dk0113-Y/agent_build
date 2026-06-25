@@ -8,9 +8,8 @@ entrypoint, a MetaController decides whether a request can be answered
 directly or needs clarification, and a DeepSeek-backed executor produces
 the final response.
 
-The repository is positioned as an internship portfolio project for AI agent
-application engineering, especially around LLM routing, LangGraph control
-flow, TUI interaction, and testable runtime boundaries.
+The repository is an AI agent application prototype focused on LLM routing,
+LangGraph control flow, TUI interaction, and testable runtime boundaries.
 
 ## Project Background and Goals
 
@@ -29,7 +28,7 @@ Design goals visible in the current codebase:
 
 - Python 3.12 style codebase
 - Textual and Rich for the terminal UI
-- LangGraph for the runtime graph, interrupt, resume, and in-memory checkpoint flow
+- LangGraph for the runtime graph, interrupt, continuation, and in-memory checkpoint flow
 - Pydantic for strict MetaController decision schema validation
 - LangChain DeepSeek integration through `langchain_deepseek.ChatDeepSeek`
 - `unittest` for the current test suite
@@ -43,7 +42,7 @@ and `tests/`. There is no `pyproject.toml` or lockfile in this repository.
 - Direct DeepSeek chat path through `DeepSeekClient`.
 - MetaController that asks the LLM to return strict JSON for routing, risk, clarification, role, reasoning profile, skills, and verifier planning.
 - LangGraph flow: `meta -> clarification` for ambiguous or high-privilege requests, and `meta -> execute -> response` for clear answer-only requests.
-- Clarification resume flow using LangGraph `Command(resume=...)` and per-thread state.
+- Clarification continuation flow using LangGraph `Command` and per-thread state.
 - Selected-text question mode: only selected text from agent reply bodies is accepted.
 - Markdown-to-visible-text rendering helper for headings, bold text, bullets, and backticks.
 - Missing API key fallback that returns a readable error instead of crashing.
@@ -68,7 +67,7 @@ and `tests/`. There is no `pyproject.toml` or lockfile in this repository.
 |       |   |-- graph.py                # LangGraph StateGraph wiring
 |       |   |-- nodes.py                # Meta, clarification, execute, response nodes
 |       |   |-- routing.py              # Clarification/execute routing policy
-|       |   |-- runner.py               # Graph runner and interrupt/resume handling
+|       |   |-- runner.py               # Graph runner and interrupt/continuation handling
 |       |   `-- state.py                # Graph state schema
 |       |-- llm/
 |       |   |-- deepseek_client.py      # DeepSeek client wrapper
@@ -125,8 +124,8 @@ tools, skills, verifiers, and risk levels.
 MetaDecision requests clarification, requires human approval, or asks for
 high-privilege autonomy modes such as file edits or command execution.
 
-`src/dk_agent/graph/runner.py` manages thread IDs, interrupt payloads, resume
-calls, and pending clarification state.
+`src/dk_agent/graph/runner.py` manages thread IDs, interrupt payloads,
+continuation calls, and pending clarification state.
 
 ### DeepSeek Gateway
 
@@ -135,11 +134,11 @@ environment, calls `ChatDeepSeek`, normalizes response content and usage
 metadata, and returns structured errors for missing keys or invocation
 failures.
 
-## What I Built
+## Implemented Components
 
 - Refactored the assistant into explicit UI, runtime, graph, executor, routing, and LLM gateway boundaries.
 - Added a MetaController path that validates structured routing decisions instead of letting the UI call the model directly.
-- Implemented a clarification gate for ambiguous or high-risk requests using LangGraph interrupt/resume state.
+- Implemented a clarification gate for ambiguous or high-risk requests using LangGraph interrupt and continuation state.
 - Added selected-text follow-up behavior in the TUI while keeping model-specific details below the UI layer.
 - Built unit tests around runtime behavior, graph routing, schema validation, missing API key handling, and Markdown rendering.
 
@@ -198,11 +197,18 @@ require live DeepSeek access. The missing-key branch is covered explicitly.
 - Some Chinese UI strings in `tui_app.py` appear as mojibake in the current source display. This README documents the issue but does not change UI behavior.
 - `.env` is ignored by `.gitignore`, but local secret files still need to be kept out of commits and screenshots.
 
-## Internship Skill Mapping
+## Engineering Coverage
 
-- AI Agent architecture: separates UI, runtime, routing, graph control flow, executor, and LLM gateway instead of coupling model calls directly to the TUI.
-- LangGraph: uses `StateGraph`, conditional routing, interrupt payloads, resume commands, and thread-scoped checkpoint state.
-- LLM routing and safety: validates MetaController decisions with Pydantic and blocks unclear or high-privilege requests at a clarification gate.
-- Tooling boundary design: exposes `tools`, `skills`, and `verifiers` in response metadata while keeping unsupported capabilities disabled in V0.4.
-- Terminal UX engineering: builds a Textual chat interface with scroll handling, command handling, selected-text interactions, and reply metadata.
-- Testability: uses protocol-style gateways and fake controllers/executors to test graph, runtime, schema, and rendering behavior without relying on live API calls.
+- AI agent architecture: separates UI, runtime, routing, graph control flow,
+  executor, and LLM gateway instead of coupling model calls directly to the
+  TUI.
+- LangGraph control flow: uses `StateGraph`, conditional routing, interrupt
+  payloads, continuation commands, and thread-scoped checkpoint state.
+- LLM routing and safety: validates MetaController decisions with Pydantic and
+  blocks unclear or high-privilege requests at a clarification gate.
+- Tooling boundaries: exposes `tools`, `skills`, and `verifiers` in response
+  metadata while keeping unsupported capabilities disabled.
+- Terminal interaction: provides a Textual chat interface with scroll handling,
+  commands, selected-text interactions, and reply metadata.
+- Testability: uses protocol-style gateways and fake controllers/executors to
+  test graph, runtime, schema, and rendering behavior without live API calls.
